@@ -143,6 +143,12 @@ This removes all files, the shell function, and the SessionStart hook.
 - **LLM overhead**: The `/restart` command runs on Haiku, which is fast (~2-3s) but not instant. A native implementation would be zero-latency.
 - **Session must exist**: On the very first run after install, the SessionStart hook needs to fire once to capture the session ID. If you `/restart` before any hook has run, it falls back to a fresh session.
 
+## Troubleshooting
+
+- **`/restart` does nothing**: Make sure you opened a new terminal after installing. The `claude()` wrapper function needs to be loaded from your shell rc file.
+- **Falls back to new session**: The SessionStart hook hasn't fired yet. Run `/restart` again — the hook fires on resume and captures the ID.
+- **Windows (WSL)**: The installer works without changes inside WSL. Run it from your WSL terminal.
+
 ## How it's built
 
 | File | Purpose |
