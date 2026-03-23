@@ -123,6 +123,12 @@ install_fish() {
     return
   fi
 
+  # Back up existing claude.fish if it exists (user may have custom content)
+  if [ -f "$FISH_DIR/claude.fish" ]; then
+    cp "$FISH_DIR/claude.fish" "$FISH_DIR/claude.fish.backup"
+    warn "Existing claude.fish backed up to claude.fish.backup"
+  fi
+
   cat > "$FISH_DIR/claude.fish" << 'FISH_FUNC'
 # claude-restart: Wrapper that enables /restart inside Claude Code sessions.
 # See: https://github.com/yacb2/claude-restart
@@ -210,7 +216,13 @@ uninstall() {
     if [ "$SHELL_NAME" = "fish" ]; then
       if [ -f "$HOME/.config/fish/functions/claude.fish" ] && grep -q "claude-restart" "$HOME/.config/fish/functions/claude.fish"; then
         rm -f "$HOME/.config/fish/functions/claude.fish"
-        info "Fish function removed"
+        # Restore backup if it exists
+        if [ -f "$HOME/.config/fish/functions/claude.fish.backup" ]; then
+          mv "$HOME/.config/fish/functions/claude.fish.backup" "$HOME/.config/fish/functions/claude.fish"
+          info "Fish function removed (previous claude.fish restored from backup)"
+        else
+          info "Fish function removed"
+        fi
       fi
     else
       if grep -q "$MARKER_START" "$RC_FILE"; then
