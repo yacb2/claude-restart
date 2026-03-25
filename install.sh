@@ -207,8 +207,8 @@ uninstall() {
   rm -f "$COMMANDS_DIR/restart.md"
   info "Command /restart removed"
 
-  # 3. Remove tmp files
-  rm -f "$TMP_DIR/restart-flag" "$TMP_DIR/session-id"
+  # 3. Remove tmp files (restart flag + all per-directory session files)
+  rm -f "$TMP_DIR/restart-flag" "$TMP_DIR"/session-id*
   info "Temp files cleaned"
 
   # 4. Remove shell function

@@ -3,11 +3,17 @@
 # Runs claude normally. If a restart flag is detected after exit,
 # automatically resumes the same session with a fresh process.
 #
+# Session IDs are scoped per directory so multiple projects
+# can use /restart independently without collisions.
+#
 # This script is POSIX-compatible (works with sh, bash, zsh, dash).
 
 CLAUDE_RESTART_DIR="${HOME}/.claude/tmp"
 RESTART_FLAG="${CLAUDE_RESTART_DIR}/restart-flag"
-SESSION_FILE="${CLAUDE_RESTART_DIR}/session-id"
+
+# Scope session file by working directory hash (matches capture-session-id.sh)
+DIR_HASH=$(printf '%s' "$PWD" | cksum | cut -d' ' -f1)
+SESSION_FILE="${CLAUDE_RESTART_DIR}/session-id-${DIR_HASH}"
 
 # Ensure tmp directory exists
 mkdir -p "$CLAUDE_RESTART_DIR"
@@ -52,7 +58,13 @@ while [ -f "$RESTART_FLAG" ]; do
     echo ""
     echo "  Restarting Claude Code (resuming session)..."
     echo ""
-    "$CLAUDE_BIN" --resume "$SESSION_ID"
+    # If resume fails (session not found, expired, etc.), fall back to new session
+    if ! "$CLAUDE_BIN" --resume "$SESSION_ID"; then
+      echo ""
+      echo "  Resume failed, starting new session..."
+      echo ""
+      "$CLAUDE_BIN" "$@"
+    fi
   else
     echo ""
     echo "  Restarting Claude Code (new session, no session ID found)..."
