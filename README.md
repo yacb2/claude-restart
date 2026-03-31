@@ -33,8 +33,10 @@ with your conversation resumed, fresh hooks, and the latest binary
 Three components make this work:
 
 1. **Wrapper script** — runs `claude` inside a loop that checks for a restart flag on exit
-2. **SessionStart hook** — captures the session ID so the wrapper knows what to resume
+2. **SessionStart hook** — captures the session ID (scoped per directory) so the wrapper knows what to resume
 3. **`/restart` command** — writes the flag and sends SIGTERM (runs on Haiku for speed)
+
+Session IDs are scoped by working directory, so you can run `/restart` in multiple projects simultaneously without collisions.
 
 ## Requirements
 
@@ -142,19 +144,21 @@ This removes all files, the shell function, and the SessionStart hook.
 - **Requires the wrapper**: `/restart` only works when Claude was launched through the wrapper function. If you open Claude some other way (e.g., from an IDE integration that calls the binary directly), the restart flag is written but nothing picks it up.
 - **LLM overhead**: The `/restart` command runs on Haiku, which is fast (~2-3s) but not instant. A native implementation would be zero-latency.
 - **Session must exist**: On the very first run after install, the SessionStart hook needs to fire once to capture the session ID. If you `/restart` before any hook has run, it falls back to a fresh session.
+- **Resume can fail**: If the session file is corrupted or the session was garbage-collected, the wrapper automatically falls back to a fresh session instead of hanging.
 
 ## Troubleshooting
 
 - **`/restart` does nothing**: Make sure you opened a new terminal after installing. The `claude()` wrapper function needs to be loaded from your shell rc file.
 - **Falls back to new session**: The SessionStart hook hasn't fired yet. Run `/restart` again — the hook fires on resume and captures the ID.
+- **Resumes the wrong project's session**: This was fixed in v0.2. Session IDs are now scoped per directory. If you installed an older version, re-run `./install.sh` to update.
 - **Windows (WSL)**: The installer works without changes inside WSL. Run it from your WSL terminal.
 
 ## How it's built
 
 | File | Purpose |
 |------|---------|
-| `scripts/claude-wrapper.sh` | POSIX-compatible wrapper that runs `claude` in a restart loop |
-| `scripts/capture-session-id.sh` | SessionStart hook that saves the session ID to `~/.claude/tmp/session-id` |
+| `scripts/claude-wrapper.sh` | POSIX-compatible wrapper that runs `claude` in a restart loop, with automatic fallback if resume fails |
+| `scripts/capture-session-id.sh` | SessionStart hook that saves the session ID per directory to `~/.claude/tmp/session-id-<hash>` |
 | `commands/restart.md` | Claude Code command (runs on Haiku) that writes the restart flag and sends SIGTERM |
 | `install.sh` | Installer with shell detection and `--uninstall` support |
 
