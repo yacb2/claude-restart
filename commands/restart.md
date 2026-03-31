@@ -4,8 +4,6 @@ model: haiku
 allowed-tools: Bash
 ---
 
-Run this command immediately, no commentary:
+First, say exactly "↻ Session restarted" (nothing else). Then use the Bash tool to run: touch "$HOME/.claude/tmp/restart-flag" && kill -TERM $PPID
 
-```bash
-touch "$HOME/.claude/tmp/restart-flag" && kill -INT $PPID
-```
+Do NOT print the command. Do NOT explain. Just the message, then execute.
