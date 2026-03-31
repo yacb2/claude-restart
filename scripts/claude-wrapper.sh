@@ -56,18 +56,20 @@ while [ -f "$RESTART_FLAG" ]; do
 
   if [ -n "$SESSION_ID" ]; then
     echo ""
-    echo "  Restarting Claude Code (resuming session)..."
+    echo "  ↻ Restarting Claude Code — resuming session ${SESSION_ID%%-*}…"
     echo ""
-    # If resume fails (session not found, expired, etc.), fall back to new session
-    if ! "$CLAUDE_BIN" --resume "$SESSION_ID"; then
+    "$CLAUDE_BIN" --resume "$SESSION_ID"
+    RESUME_EXIT=$?
+    # Only fall back to new session if resume genuinely failed (not a /restart)
+    if [ $RESUME_EXIT -ne 0 ] && [ ! -f "$RESTART_FLAG" ]; then
       echo ""
-      echo "  Resume failed, starting new session..."
+      echo "  ⚠ Resume failed — starting fresh session…"
       echo ""
       "$CLAUDE_BIN" "$@"
     fi
   else
     echo ""
-    echo "  Restarting Claude Code (new session, no session ID found)..."
+    echo "  ↻ Restarting Claude Code — no session ID found, starting fresh…"
     echo ""
     "$CLAUDE_BIN" "$@"
   fi

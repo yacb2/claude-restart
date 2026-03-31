@@ -16,7 +16,7 @@ Useful when you need to:
 You type /restart inside Claude Code
         │
         ▼
-Haiku runs: touch restart-flag && kill -INT $PPID
+Haiku runs: touch restart-flag && kill -TERM $PPID
         │
         ▼
 Claude Code exits cleanly (session is already saved to disk)
@@ -34,7 +34,7 @@ Three components make this work:
 
 1. **Wrapper script** — runs `claude` inside a loop that checks for a restart flag on exit
 2. **SessionStart hook** — captures the session ID so the wrapper knows what to resume
-3. **`/restart` command** — writes the flag and sends SIGINT (runs on Haiku for speed)
+3. **`/restart` command** — writes the flag and sends SIGTERM (runs on Haiku for speed)
 
 ## Requirements
 
@@ -155,7 +155,7 @@ This removes all files, the shell function, and the SessionStart hook.
 |------|---------|
 | `scripts/claude-wrapper.sh` | POSIX-compatible wrapper that runs `claude` in a restart loop |
 | `scripts/capture-session-id.sh` | SessionStart hook that saves the session ID to `~/.claude/tmp/session-id` |
-| `commands/restart.md` | Claude Code command (runs on Haiku) that writes the restart flag and sends SIGINT |
+| `commands/restart.md` | Claude Code command (runs on Haiku) that writes the restart flag and sends SIGTERM |
 | `install.sh` | Installer with shell detection and `--uninstall` support |
 
 ## License
