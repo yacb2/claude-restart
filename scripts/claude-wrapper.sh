@@ -63,6 +63,19 @@ while [ -f "$RESTART_FLAG" ]; do
   fi
 
   if [ -n "$SESSION_ID" ]; then
+    # Warn if session file is large (compaction is in-memory only in Claude Code,
+    # so --resume reloads the full uncompacted history from disk)
+    SESSION_JSONL=$(find "$HOME/.claude/projects" -name "${SESSION_ID}.jsonl" 2>/dev/null | head -1)
+    if [ -n "$SESSION_JSONL" ]; then
+      FILE_SIZE=$(wc -c < "$SESSION_JSONL" | tr -d ' ')
+      SIZE_MB=$((FILE_SIZE / 1048576))
+      if [ "$SIZE_MB" -ge 2 ]; then
+        echo ""
+        echo "  ⚠ Large session detected (${SIZE_MB}MB). Resume will reload the full"
+        echo "    conversation history — Claude Code compaction is in-memory only and"
+        echo "    is not persisted to disk, so compaction may re-trigger on resume."
+      fi
+    fi
     echo ""
     echo "  ↻ Restarting Claude Code — resuming session ${SESSION_ID%%-*}…"
     echo ""

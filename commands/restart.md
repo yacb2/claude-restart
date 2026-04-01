@@ -1,6 +1,5 @@
 ---
 description: Restart Claude Code session (exit + auto-resume)
-model: haiku
 allowed-tools: Bash
 ---
 
