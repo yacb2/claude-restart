@@ -3,17 +3,19 @@
 # Runs claude normally. If a restart flag is detected after exit,
 # automatically resumes the same session with a fresh process.
 #
-# Session IDs are scoped per directory so multiple projects
-# can use /restart independently without collisions.
+# Each wrapper instance is identified by its PID (CLAUDE_RESTART_ID).
+# The restart flag and session file are scoped per wrapper, so multiple
+# sessions — even in the same directory — never collide.
 #
 # This script is POSIX-compatible (works with sh, bash, zsh, dash).
 
 CLAUDE_RESTART_DIR="${HOME}/.claude/tmp"
-RESTART_FLAG="${CLAUDE_RESTART_DIR}/restart-flag"
+WRAPPER_ID=$$
+RESTART_FLAG="${CLAUDE_RESTART_DIR}/restart-flag-${WRAPPER_ID}"
+SESSION_FILE="${CLAUDE_RESTART_DIR}/session-id-${WRAPPER_ID}"
 
-# Scope session file by working directory hash (matches capture-session-id.sh)
-DIR_HASH=$(printf '%s' "$PWD" | cksum | cut -d' ' -f1)
-SESSION_FILE="${CLAUDE_RESTART_DIR}/session-id-${DIR_HASH}"
+# Export wrapper ID so the restart command and hooks can reference it
+export CLAUDE_RESTART_ID="$WRAPPER_ID"
 
 # Ensure tmp directory exists
 mkdir -p "$CLAUDE_RESTART_DIR"
@@ -38,6 +40,12 @@ if ! find_claude_binary; then
   echo "Error: claude binary not found in PATH"
   exit 1
 fi
+
+# Clean up temp files on exit (normal or interrupted)
+cleanup() {
+  rm -f "$RESTART_FLAG" "$SESSION_FILE"
+}
+trap cleanup EXIT
 
 # Clean up any stale restart flag from previous sessions
 rm -f "$RESTART_FLAG"
