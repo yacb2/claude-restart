@@ -1,6 +1,6 @@
 # claude-restart
 
-Add a `/restart` command to [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that restarts the session in-place — fresh process, same conversation.
+Add a restart command to [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that restarts the session in-place — fresh process, same conversation.
 
 Useful when you need to:
 - Pick up a new Claude Code version after an update
@@ -12,14 +12,19 @@ Useful when you need to:
 
 ## How it works
 
+Two ways to restart, both produce the same result:
+
+### `restart` (recommended — zero tokens)
+
 ```
-You type /restart inside Claude Code
+You type "restart" in the prompt
         │
         ▼
-Haiku runs: touch restart-flag && kill -TERM $PPID
+UserPromptSubmit hook intercepts it before reaching the model
         │
         ▼
-Claude Code exits cleanly (session is already saved to disk)
+Hook runs: touch restart-flag && kill -TERM $PPID
+(prompt is blocked — model never sees it, zero tokens consumed)
         │
         ▼
 The wrapper script detects the restart flag
@@ -30,13 +35,24 @@ Claude Code reappears in the same terminal
 with your conversation resumed, fresh hooks, and the latest binary
 ```
 
-Three components make this work:
+### `/restart` (fallback — sends context to model)
+
+The `/restart` slash command works the same way but goes through the model: Claude reads the command, generates a response, and then executes the kill. This means the **entire conversation context is sent to the model** just to run a `touch` and `kill`.
+
+> **Why not use Haiku for `/restart`?** We originally set `model: haiku` on the command to save tokens, but Haiku has a 200k context window. If your conversation exceeds that, Claude Code tries to compact the conversation to fit Haiku's limit — and fails. The command now uses the session's current model to avoid this, but still consumes input tokens proportional to your conversation size.
+
+**Use `restart` (no slash) whenever possible.** Only fall back to `/restart` if you're not running inside the wrapper (e.g., IDE integrations that call the Claude binary directly).
+
+## Components
+
+Four components make this work:
 
 1. **Wrapper script** — runs `claude` inside a loop that checks for a restart flag on exit
 2. **SessionStart hook** — captures the session ID (scoped per wrapper instance) so the wrapper knows what to resume
-3. **`/restart` command** — writes the flag and sends SIGTERM (runs on Haiku for speed)
+3. **UserPromptSubmit hook** — intercepts `restart` prompts and executes the restart directly, bypassing the model (zero tokens)
+4. **`/restart` command** — fallback that writes the flag and sends SIGTERM through the model
 
-Each wrapper instance gets a unique ID (its PID), so multiple sessions — even in the same project directory — can use `/restart` independently without collisions.
+Each wrapper instance gets a unique ID (its PID), so multiple sessions — even in the same project directory — can use `restart` independently without collisions.
 
 ## Requirements
 
@@ -60,7 +76,8 @@ cd claude-restart
 2. Copies the `/restart` command to `~/.claude/commands/`
 3. Adds a `claude()` shell function to your rc file (`.zshrc`, `.bashrc`, or fish functions)
 4. Adds a `SessionStart` hook to `~/.claude/settings.json`
-5. Creates `~/.claude/tmp/` for temp files
+5. Adds a `UserPromptSubmit` hook for zero-token restart
+6. Creates `~/.claude/tmp/` for temp files
 
 The installer is **idempotent** — running it twice won't duplicate anything.
 
@@ -86,7 +103,7 @@ function claude
 end
 ```
 
-4. Add the SessionStart hook to `~/.claude/settings.json`:
+4. Add the hooks to `~/.claude/settings.json`:
 
 ```json
 {
@@ -100,6 +117,16 @@ end
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/scripts/restart-hook.sh"
+          }
+        ]
+      }
     ]
   }
 }
@@ -107,7 +134,7 @@ end
 
 ### Permissions
 
-If Claude asks for permission to run the `kill` command, allow `Bash(kill:*)` in your settings:
+If Claude asks for permission to run the `kill` command when using `/restart` (the slash command fallback), allow `Bash(kill:*)` in your settings:
 
 ```json
 {
@@ -119,13 +146,15 @@ If Claude asks for permission to run the `kill` command, allow `Bash(kill:*)` in
 }
 ```
 
+The `restart` hook (no slash) doesn't need this permission since it runs outside the model.
+
 ## Usage
 
 Open a **new terminal** after installation, then:
 
 ```
 $ claude
-> /restart
+> restart
 ```
 
 That's it. Claude exits and comes back automatically with the same conversation.
@@ -137,19 +166,20 @@ cd claude-restart
 ./install.sh --uninstall
 ```
 
-This removes all files, the shell function, and the SessionStart hook.
+This removes all files, the shell function, and all hooks.
 
 ## Limitations
 
-- **Requires the wrapper**: `/restart` only works when Claude was launched through the wrapper function. If you open Claude some other way (e.g., from an IDE integration that calls the binary directly), the restart flag is written but nothing picks it up.
-- **LLM overhead**: The `/restart` command runs on Haiku, which is fast (~2-3s) but not instant. A native implementation would be zero-latency.
-- **Session must exist**: On the very first run after install, the SessionStart hook needs to fire once to capture the session ID. If you `/restart` before any hook has run, it falls back to a fresh session.
+- **Requires the wrapper**: `restart` only works when Claude was launched through the wrapper function. If you open Claude some other way (e.g., from an IDE integration that calls the binary directly), use `/restart` instead.
+- **Exact match**: The hook only triggers on the exact word `restart` (case-insensitive). Writing "please restart" or "restart now" won't trigger it — use `/restart` for those cases.
+- **Session must exist**: On the very first run after install, the SessionStart hook needs to fire once to capture the session ID. If you restart before any hook has run, it falls back to a fresh session.
 - **Resume can fail**: If the session file is corrupted or the session was garbage-collected, the wrapper automatically falls back to a fresh session instead of hanging.
+- **Large sessions**: Claude Code compaction is in-memory only and not persisted to disk. When resuming a very large session, Claude Code reloads the full conversation history from the JSONL file, which may trigger re-compaction. The wrapper warns when a session file exceeds 2MB.
 
 ## Troubleshooting
 
-- **`/restart` does nothing**: Make sure you opened a new terminal after installing. The `claude()` wrapper function needs to be loaded from your shell rc file.
-- **Falls back to new session**: The SessionStart hook hasn't fired yet. Run `/restart` again — the hook fires on resume and captures the ID.
+- **`restart` does nothing**: Make sure you opened a new terminal after installing. The `claude()` wrapper function needs to be loaded from your shell rc file.
+- **Falls back to new session**: The SessionStart hook hasn't fired yet. Run `restart` again — the hook fires on resume and captures the ID.
 - **Resumes the wrong session**: Fixed in v0.3. Session IDs are now scoped per wrapper instance (not per directory), so multiple sessions in the same project don't collide. Re-run `./install.sh` to update.
 - **Windows (WSL)**: The installer works without changes inside WSL. Run it from your WSL terminal.
 
@@ -157,10 +187,11 @@ This removes all files, the shell function, and the SessionStart hook.
 
 | File | Purpose |
 |------|---------|
-| `scripts/claude-wrapper.sh` | POSIX-compatible wrapper that runs `claude` in a restart loop, with automatic fallback if resume fails |
+| `scripts/claude-wrapper.sh` | POSIX-compatible wrapper that runs `claude` in a restart loop, with large-session warning and automatic fallback if resume fails |
 | `scripts/capture-session-id.sh` | SessionStart hook that saves the session ID per wrapper instance to `~/.claude/tmp/session-id-<pid>` |
-| `commands/restart.md` | Claude Code command (runs on Haiku) that writes the restart flag and sends SIGTERM |
-| `install.sh` | Installer with shell detection and `--uninstall` support |
+| `scripts/restart-hook.sh` | UserPromptSubmit hook that intercepts `restart` prompts and executes the restart directly (zero tokens) |
+| `commands/restart.md` | Claude Code slash command fallback that writes the restart flag and sends SIGTERM through the model |
+| `install.sh` | Installer with shell detection, hook registration, and `--uninstall` support |
 
 ## License
 

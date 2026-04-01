@@ -67,7 +67,8 @@ install() {
   # 2. Copy scripts
   cp "$SCRIPT_DIR/scripts/claude-wrapper.sh" "$SCRIPTS_DIR/claude-wrapper.sh"
   cp "$SCRIPT_DIR/scripts/capture-session-id.sh" "$SCRIPTS_DIR/capture-session-id.sh"
-  chmod +x "$SCRIPTS_DIR/claude-wrapper.sh" "$SCRIPTS_DIR/capture-session-id.sh"
+  cp "$SCRIPT_DIR/scripts/restart-hook.sh" "$SCRIPTS_DIR/restart-hook.sh"
+  chmod +x "$SCRIPTS_DIR/claude-wrapper.sh" "$SCRIPTS_DIR/capture-session-id.sh" "$SCRIPTS_DIR/restart-hook.sh"
   info "Scripts installed"
 
   # 3. Copy command
@@ -85,6 +86,9 @@ install() {
 
   # 5. Add SessionStart hook to settings.json
   install_hook
+
+  # 6. Add UserPromptSubmit hook for zero-token restart
+  install_restart_hook
 
   echo ""
   echo "  Done! Open a new terminal and run 'claude' to start."
@@ -191,6 +195,30 @@ SETTINGS
   fi
 }
 
+install_restart_hook() {
+  # Check if hook already exists
+  if grep -q "restart-hook.sh" "$SETTINGS_FILE"; then
+    info "UserPromptSubmit restart hook already configured (skipped)"
+    return
+  fi
+
+  # Merge hook into existing settings.json using jq
+  TMP_SETTINGS="${SETTINGS_FILE}.tmp"
+  if jq -e '.hooks.UserPromptSubmit' "$SETTINGS_FILE" >/dev/null 2>&1; then
+    jq '.hooks.UserPromptSubmit += [{"hooks": [{"type": "command", "command": "~/.claude/scripts/restart-hook.sh"}]}]' \
+      "$SETTINGS_FILE" > "$TMP_SETTINGS" && mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+    info "Appended restart hook to existing UserPromptSubmit array"
+  elif jq -e '.hooks' "$SETTINGS_FILE" >/dev/null 2>&1; then
+    jq '.hooks.UserPromptSubmit = [{"hooks": [{"type": "command", "command": "~/.claude/scripts/restart-hook.sh"}]}]' \
+      "$SETTINGS_FILE" > "$TMP_SETTINGS" && mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+    info "Added UserPromptSubmit restart hook"
+  else
+    jq '. + {"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "~/.claude/scripts/restart-hook.sh"}]}]}}' \
+      "$SETTINGS_FILE" > "$TMP_SETTINGS" && mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+    info "Added hooks with UserPromptSubmit to settings.json"
+  fi
+}
+
 # --- Uninstall ---
 uninstall() {
   detect_shell
@@ -200,7 +228,7 @@ uninstall() {
   echo ""
 
   # 1. Remove scripts
-  rm -f "$SCRIPTS_DIR/claude-wrapper.sh" "$SCRIPTS_DIR/capture-session-id.sh"
+  rm -f "$SCRIPTS_DIR/claude-wrapper.sh" "$SCRIPTS_DIR/capture-session-id.sh" "$SCRIPTS_DIR/restart-hook.sh"
   info "Scripts removed"
 
   # 2. Remove command
@@ -244,6 +272,18 @@ uninstall() {
       else . end
     ' "$SETTINGS_FILE" > "$TMP_SETTINGS" && mv "$TMP_SETTINGS" "$SETTINGS_FILE"
     info "SessionStart hook removed from settings.json"
+  fi
+
+  # 6. Remove UserPromptSubmit restart hook from settings.json
+  if [ -f "$SETTINGS_FILE" ] && grep -q "restart-hook.sh" "$SETTINGS_FILE"; then
+    TMP_SETTINGS="${SETTINGS_FILE}.tmp"
+    jq '
+      if .hooks.UserPromptSubmit then
+        .hooks.UserPromptSubmit |= map(select(.hooks | all(.command != "~/.claude/scripts/restart-hook.sh")))
+        | if .hooks.UserPromptSubmit == [] then del(.hooks.UserPromptSubmit) else . end
+      else . end
+    ' "$SETTINGS_FILE" > "$TMP_SETTINGS" && mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+    info "UserPromptSubmit restart hook removed from settings.json"
   fi
 
   echo ""
