@@ -33,10 +33,10 @@ with your conversation resumed, fresh hooks, and the latest binary
 Three components make this work:
 
 1. **Wrapper script** — runs `claude` inside a loop that checks for a restart flag on exit
-2. **SessionStart hook** — captures the session ID (scoped per directory) so the wrapper knows what to resume
+2. **SessionStart hook** — captures the session ID (scoped per wrapper instance) so the wrapper knows what to resume
 3. **`/restart` command** — writes the flag and sends SIGTERM (runs on Haiku for speed)
 
-Session IDs are scoped by working directory, so you can run `/restart` in multiple projects simultaneously without collisions.
+Each wrapper instance gets a unique ID (its PID), so multiple sessions — even in the same project directory — can use `/restart` independently without collisions.
 
 ## Requirements
 
@@ -150,7 +150,7 @@ This removes all files, the shell function, and the SessionStart hook.
 
 - **`/restart` does nothing**: Make sure you opened a new terminal after installing. The `claude()` wrapper function needs to be loaded from your shell rc file.
 - **Falls back to new session**: The SessionStart hook hasn't fired yet. Run `/restart` again — the hook fires on resume and captures the ID.
-- **Resumes the wrong project's session**: This was fixed in v0.2. Session IDs are now scoped per directory. If you installed an older version, re-run `./install.sh` to update.
+- **Resumes the wrong session**: Fixed in v0.3. Session IDs are now scoped per wrapper instance (not per directory), so multiple sessions in the same project don't collide. Re-run `./install.sh` to update.
 - **Windows (WSL)**: The installer works without changes inside WSL. Run it from your WSL terminal.
 
 ## How it's built
@@ -158,7 +158,7 @@ This removes all files, the shell function, and the SessionStart hook.
 | File | Purpose |
 |------|---------|
 | `scripts/claude-wrapper.sh` | POSIX-compatible wrapper that runs `claude` in a restart loop, with automatic fallback if resume fails |
-| `scripts/capture-session-id.sh` | SessionStart hook that saves the session ID per directory to `~/.claude/tmp/session-id-<hash>` |
+| `scripts/capture-session-id.sh` | SessionStart hook that saves the session ID per wrapper instance to `~/.claude/tmp/session-id-<pid>` |
 | `commands/restart.md` | Claude Code command (runs on Haiku) that writes the restart flag and sends SIGTERM |
 | `install.sh` | Installer with shell detection and `--uninstall` support |
 
