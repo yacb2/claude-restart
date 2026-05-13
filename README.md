@@ -183,15 +183,24 @@ This removes all files, the shell function, and all hooks.
 - **Resumes the wrong session**: Fixed in v0.3. Session IDs are now scoped per wrapper instance (not per directory), so multiple sessions in the same project don't collide. Re-run `./install.sh` to update.
 - **Windows (WSL)**: The installer works without changes inside WSL. Run it from your WSL terminal.
 
+## Coexistence with `claude-session-handoff`
+
+`claude-restart` shares its wrapper with [`claude-session-handoff`](https://github.com/yacb2/claude-session-handoff), a related tool that — instead of resuming the current session — closes it and opens a fresh one with a handoff prompt seeded as initial context. Same wrapper trick, different goal: resume vs. fresh-with-context.
+
+Both tools install the same `~/.claude/scripts/claude-wrapper.sh` file (versioned in its header) and maintain a single `# claude-wrapper: start/end` block in your shell rc, listing each registered tool on a `# registered-by:` line. Either tool can be installed first; either can be uninstalled without breaking the other. The wrapper file and the rc block are removed only when the last tool is uninstalled.
+
+The wrapper loop checks both flag patterns (`restart-flag-<pid>` and `handoff-flag-<pid>`). If both are set in the same iteration, handoff wins — a fresh clean session reflects the most recent user intent. If you upgrade from a pre-shared-wrapper install, the legacy `# claude-restart: start/end` block is migrated automatically.
+
 ## How it's built
 
 | File | Purpose |
 |------|---------|
-| `scripts/claude-wrapper.sh` | POSIX-compatible wrapper that runs `claude` in a restart loop, with large-session warning and automatic fallback if resume fails |
+| `scripts/claude-wrapper.sh` | POSIX-compatible wrapper that runs `claude` in a restart loop, with large-session warning and automatic fallback if resume fails. Byte-for-byte identical to the copy shipped by `claude-session-handoff`. |
 | `scripts/capture-session-id.sh` | SessionStart hook that saves the session ID per wrapper instance to `~/.claude/tmp/session-id-<pid>` |
 | `scripts/restart-hook.sh` | UserPromptSubmit hook that intercepts `restart` prompts and executes the restart directly (zero tokens) |
 | `commands/restart.md` | Claude Code slash command fallback that writes the restart flag and sends SIGTERM through the model |
-| `install.sh` | Installer with shell detection, hook registration, and `--uninstall` support |
+| `install.sh` | Installer with shell detection, shared-wrapper protocol coordination, hook registration, and `--uninstall` support |
+| `tests/smoke.sh` | Installer-protocol validation (22 asserts, 6 cases). Requires `claude-session-handoff` as a sibling repo or its path set via `REPO_HANDOFF`. |
 
 ## License
 
