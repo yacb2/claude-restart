@@ -1,5 +1,5 @@
 #!/bin/sh
-# claude-wrapper version: 2
+# claude-wrapper version: 3
 # Unified wrapper for claude-restart and claude-session-handoff.
 #
 # Runs claude normally. After each exit, checks per-PID flag files in
@@ -85,7 +85,15 @@ while [ -f "$HANDOFF_FLAG" ] || [ -f "$RESTART_FLAG" ]; do
       echo ""
     fi
 
-    "$CLAUDE_BIN"
+    # If a payload was seeded, pass an initial prompt as a positional arg so the
+    # new session starts processing automatically without waiting for the user
+    # to type. SessionStart still fires first and injects the handoff as
+    # additionalContext; this prompt becomes the model's first user message.
+    if [ -n "$PAYLOAD_BYTES" ]; then
+      "$CLAUDE_BIN" "continue"
+    else
+      "$CLAUDE_BIN"
+    fi
     continue
   fi
 
