@@ -1,57 +1,306 @@
 #!/bin/sh
-# claude-restart installer
-# Installs the /restart command for Claude Code.
+# claude-restart installer.
+# Installs the /restart command for Claude Code and (if needed) the
+# shared claude-wrapper.sh that both claude-restart and
+# claude-session-handoff coordinate through.
 #
 # Usage:
 #   ./install.sh              Install
-#   ./install.sh --uninstall  Remove all changes
+#   ./install.sh --uninstall  Remove all claude-restart changes
 #
-# Supports: zsh, bash, fish
+# Env vars (for sandbox testing):
+#   CLAUDE_DIR          Override ~/.claude
+#   RC_FILE_OVERRIDE    Force a specific shell rc file
+#   SHELL_NAME_OVERRIDE Force shell detection (zsh|bash|fish)
+#
+# Shared wrapper protocol — see scripts/claude-wrapper.sh.
+# Both installers:
+#   1. Compare their bundled wrapper version against the installed one and
+#      overwrite only if their version is higher (idempotent, latest-wins).
+#   2. Maintain a single shell-function block in the user's rc file,
+#      marked by `# claude-wrapper: start/end`, with a `# registered-by:`
+#      line listing every tool that needs the wrapper. Install adds the
+#      tool's name; uninstall removes it (and the entire block when empty).
+#   3. Migrate legacy per-tool blocks (`# claude-restart: start`,
+#      `# claude-session-handoff: start`) into the shared block.
+#
+# Supports: zsh, bash, fish.
 
 set -e
 
-# --- Configuration ---
-CLAUDE_DIR="$HOME/.claude"
+CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 SCRIPTS_DIR="$CLAUDE_DIR/scripts"
 COMMANDS_DIR="$CLAUDE_DIR/commands"
 TMP_DIR="$CLAUDE_DIR/tmp"
 SETTINGS_FILE="$CLAUDE_DIR/settings.json"
 
-# Marker comments used to identify our additions
-MARKER_START="# claude-restart: start"
-MARKER_END="# claude-restart: end"
+WRAPPER_PATH="$SCRIPTS_DIR/claude-wrapper.sh"
+TOOL_NAME="claude-restart"
+LEGACY_MARKER_START="# claude-restart: start"
+LEGACY_MARKER_END="# claude-restart: end"
+SHARED_MARKER_START="# claude-wrapper: start"
+SHARED_MARKER_END="# claude-wrapper: end"
 
-# --- Helpers ---
 info() { echo "  [+] $1"; }
 warn() { echo "  [!] $1"; }
 error() { echo "  [x] $1" >&2; exit 1; }
 
-# Detect the source directory (where install.sh lives)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# --- Dependency check ---
 check_deps() {
-  if ! command -v jq >/dev/null 2>&1; then
-    error "jq is required but not installed. Install it with: brew install jq (macOS) or apt install jq (Linux)"
-  fi
-  if ! command -v claude >/dev/null 2>&1; then
-    error "claude is not installed or not in PATH. Install Claude Code first: https://docs.anthropic.com/en/docs/claude-code"
-  fi
+  command -v jq >/dev/null 2>&1 || error "jq is required. Install: brew install jq (macOS) or apt install jq (Linux)"
+  command -v claude >/dev/null 2>&1 || error "claude is not installed or not in PATH. Install Claude Code first: https://docs.anthropic.com/en/docs/claude-code"
 }
 
-# --- Shell detection ---
 detect_shell() {
-  SHELL_NAME=$(basename "$SHELL")
+  SHELL_NAME="${SHELL_NAME_OVERRIDE:-$(basename "$SHELL")}"
+  if [ -n "$RC_FILE_OVERRIDE" ]; then
+    RC_FILE="$RC_FILE_OVERRIDE"
+    return
+  fi
   case "$SHELL_NAME" in
     zsh)  RC_FILE="$HOME/.zshrc" ;;
     bash) RC_FILE="$HOME/.bashrc" ;;
     fish) RC_FILE="$HOME/.config/fish/functions/claude.fish" ;;
-    *)    warn "Unsupported shell: $SHELL_NAME. You'll need to configure the wrapper manually."
+    *)    warn "Unsupported shell: $SHELL_NAME. Configure the wrapper manually."
           RC_FILE="" ;;
   esac
 }
 
-# --- Install ---
+# --- Shared wrapper management ---
+
+wrapper_version_of() {
+  if [ ! -f "$1" ]; then
+    echo 0
+    return
+  fi
+  V=$(awk '/^# claude-wrapper version:/ { print $4; exit }' "$1" 2>/dev/null)
+  case "$V" in
+    ''|*[!0-9]*) echo 0 ;;
+    *)           echo "$V" ;;
+  esac
+}
+
+install_wrapper() {
+  OURS=$(wrapper_version_of "$SCRIPT_DIR/scripts/claude-wrapper.sh")
+  THEIRS=$(wrapper_version_of "$WRAPPER_PATH")
+  if [ "$OURS" -gt "$THEIRS" ]; then
+    cp "$SCRIPT_DIR/scripts/claude-wrapper.sh" "$WRAPPER_PATH"
+    chmod +x "$WRAPPER_PATH"
+    if [ "$THEIRS" -eq 0 ]; then
+      info "Shared wrapper installed (v$OURS)"
+    else
+      info "Shared wrapper upgraded v$THEIRS -> v$OURS"
+    fi
+  else
+    info "Shared wrapper already at v$THEIRS (>= our v$OURS, kept)"
+  fi
+}
+
+# --- Shared rc block management (zsh/bash) ---
+
+migrate_legacy_block() {
+  RC="$1"; LMS="$2"; LME="$3"; TOOL="$4"
+  [ -f "$RC" ] || return 0
+  grep -q "$LMS" "$RC" 2>/dev/null || return 0
+  TMP="${RC}.tmp"
+  sed "\|$LMS|,\|$LME|d" "$RC" > "$TMP" && mv "$TMP" "$RC"
+  info "Migrated legacy block ($LMS) from $RC"
+  rc_block_register "$RC" "$TOOL"
+}
+
+rc_block_register() {
+  RC="$1"; TOOL="$2"
+  [ -n "$RC" ] || return 0
+  touch "$RC"
+
+  if ! grep -q "$SHARED_MARKER_START" "$RC" 2>/dev/null; then
+    cat >> "$RC" << SHARED_BLOCK
+
+$SHARED_MARKER_START
+# registered-by: $TOOL
+# Shared wrapper for claude-restart and claude-session-handoff.
+# See: https://github.com/yacb2/claude-restart
+# See: https://github.com/yoelacevedo/claude-session-handoff
+claude() {
+  ~/.claude/scripts/claude-wrapper.sh "\$@"
+}
+$SHARED_MARKER_END
+SHARED_BLOCK
+    info "Shared wrapper block added to $RC (registered: $TOOL)"
+    return
+  fi
+
+  REG_LINE=$(awk -v s="$SHARED_MARKER_START" -v e="$SHARED_MARKER_END" '
+    $0 ~ s { inblock=1; next }
+    $0 ~ e { inblock=0 }
+    inblock && /^# registered-by:/ { print; exit }
+  ' "$RC")
+  case " $REG_LINE " in
+    *" $TOOL "*)
+      info "Already registered as '$TOOL' in $RC (skipped)"
+      return
+      ;;
+  esac
+  TMP="${RC}.tmp"
+  awk -v s="$SHARED_MARKER_START" -v e="$SHARED_MARKER_END" -v tool="$TOOL" '
+    $0 ~ s { inblock=1; print; next }
+    $0 ~ e { inblock=0; print; next }
+    inblock && /^# registered-by:/ {
+      sub(/\r?$/, " " tool); print; next
+    }
+    { print }
+  ' "$RC" > "$TMP" && mv "$TMP" "$RC"
+  info "Registered '$TOOL' in shared block at $RC"
+}
+
+rc_block_unregister() {
+  RC="$1"; TOOL="$2"
+  [ -n "$RC" ] || return 0
+  [ -f "$RC" ] || return 0
+  grep -q "$SHARED_MARKER_START" "$RC" 2>/dev/null || return 0
+
+  REG_LINE=$(awk -v s="$SHARED_MARKER_START" -v e="$SHARED_MARKER_END" '
+    $0 ~ s { inblock=1; next }
+    $0 ~ e { inblock=0 }
+    inblock && /^# registered-by:/ { print; exit }
+  ' "$RC")
+  TOKENS=$(echo "$REG_LINE" | sed 's/^# registered-by:[[:space:]]*//')
+  NEW_TOKENS=""
+  for t in $TOKENS; do
+    [ "$t" = "$TOOL" ] && continue
+    if [ -z "$NEW_TOKENS" ]; then NEW_TOKENS="$t"; else NEW_TOKENS="$NEW_TOKENS $t"; fi
+  done
+
+  if [ -z "$NEW_TOKENS" ]; then
+    TMP="${RC}.tmp"
+    sed "\|$SHARED_MARKER_START|,\|$SHARED_MARKER_END|d" "$RC" > "$TMP" && mv "$TMP" "$RC"
+    info "Removed shared wrapper block from $RC (no tools remain)"
+  else
+    TMP="${RC}.tmp"
+    awk -v s="$SHARED_MARKER_START" -v e="$SHARED_MARKER_END" -v new="$NEW_TOKENS" '
+      $0 ~ s { inblock=1; print; next }
+      $0 ~ e { inblock=0; print; next }
+      inblock && /^# registered-by:/ { print "# registered-by: " new; next }
+      { print }
+    ' "$RC" > "$TMP" && mv "$TMP" "$RC"
+    info "Unregistered '$TOOL' from shared block at $RC (still registered: $NEW_TOKENS)"
+  fi
+}
+
+# --- Fish equivalents ---
+
+fish_register() {
+  FISH_DIR="$HOME/.config/fish/functions"
+  FISH_FILE="$FISH_DIR/claude.fish"
+  mkdir -p "$FISH_DIR"
+
+  if [ -f "$FISH_FILE" ] && grep -q "$SHARED_MARKER_START" "$FISH_FILE" 2>/dev/null; then
+    REG_LINE=$(grep '^# registered-by:' "$FISH_FILE" | head -1)
+    case " $REG_LINE " in
+      *" $TOOL_NAME "*) info "Fish function already registers '$TOOL_NAME' (skipped)"; return ;;
+    esac
+    TMP="${FISH_FILE}.tmp"
+    awk -v tool="$TOOL_NAME" '
+      /^# registered-by:/ { sub(/\r?$/, " " tool); print; next }
+      { print }
+    ' "$FISH_FILE" > "$TMP" && mv "$TMP" "$FISH_FILE"
+    info "Registered '$TOOL_NAME' in fish claude.fish"
+    return
+  fi
+
+  if [ -f "$FISH_FILE" ]; then
+    if grep -q "claude-restart\|claude-session-handoff" "$FISH_FILE" 2>/dev/null; then
+      info "Migrating legacy fish claude.fish"
+    else
+      cp "$FISH_FILE" "$FISH_FILE.backup"
+      warn "Existing claude.fish backed up to claude.fish.backup"
+    fi
+  fi
+
+  cat > "$FISH_FILE" << FISH_FUNC
+$SHARED_MARKER_START
+# registered-by: $TOOL_NAME
+# Shared wrapper for claude-restart and claude-session-handoff.
+function claude
+  ~/.claude/scripts/claude-wrapper.sh \$argv
+end
+$SHARED_MARKER_END
+FISH_FUNC
+  info "Fish function installed with '$TOOL_NAME' registered"
+}
+
+fish_unregister() {
+  FISH_FILE="$HOME/.config/fish/functions/claude.fish"
+  [ -f "$FISH_FILE" ] || return 0
+  grep -q "$SHARED_MARKER_START" "$FISH_FILE" 2>/dev/null || return 0
+
+  REG_LINE=$(grep '^# registered-by:' "$FISH_FILE" | head -1)
+  TOKENS=$(echo "$REG_LINE" | sed 's/^# registered-by:[[:space:]]*//')
+  NEW_TOKENS=""
+  for t in $TOKENS; do
+    [ "$t" = "$TOOL_NAME" ] && continue
+    if [ -z "$NEW_TOKENS" ]; then NEW_TOKENS="$t"; else NEW_TOKENS="$NEW_TOKENS $t"; fi
+  done
+
+  if [ -z "$NEW_TOKENS" ]; then
+    rm -f "$FISH_FILE"
+    if [ -f "$FISH_FILE.backup" ]; then
+      mv "$FISH_FILE.backup" "$FISH_FILE"
+      info "Fish function removed (previous claude.fish restored from backup)"
+    else
+      info "Fish function removed"
+    fi
+  else
+    TMP="${FISH_FILE}.tmp"
+    awk -v new="$NEW_TOKENS" '
+      /^# registered-by:/ { print "# registered-by: " new; next }
+      { print }
+    ' "$FISH_FILE" > "$TMP" && mv "$TMP" "$FISH_FILE"
+    info "Unregistered '$TOOL_NAME' from fish claude.fish (still: $NEW_TOKENS)"
+  fi
+}
+
+# --- settings.json hook helpers ---
+
+ensure_settings() {
+  [ -f "$SETTINGS_FILE" ] || printf '{}\n' > "$SETTINGS_FILE"
+}
+
+add_hook() {
+  EVENT="$1"; CMD="$2"
+  ensure_settings
+  if grep -q "$CMD" "$SETTINGS_FILE"; then
+    info "$EVENT hook '$CMD' already configured (skipped)"
+    return
+  fi
+  TMP="${SETTINGS_FILE}.tmp"
+  if jq -e ".hooks.$EVENT" "$SETTINGS_FILE" >/dev/null 2>&1; then
+    jq --arg cmd "$CMD" --arg ev "$EVENT" '.hooks[$ev] += [{"hooks":[{"type":"command","command":$cmd}]}]' "$SETTINGS_FILE" > "$TMP" && mv "$TMP" "$SETTINGS_FILE"
+  elif jq -e '.hooks' "$SETTINGS_FILE" >/dev/null 2>&1; then
+    jq --arg cmd "$CMD" --arg ev "$EVENT" '.hooks[$ev] = [{"hooks":[{"type":"command","command":$cmd}]}]' "$SETTINGS_FILE" > "$TMP" && mv "$TMP" "$SETTINGS_FILE"
+  else
+    jq --arg cmd "$CMD" --arg ev "$EVENT" '. + {"hooks": {($ev): [{"hooks":[{"type":"command","command":$cmd}]}]}}' "$SETTINGS_FILE" > "$TMP" && mv "$TMP" "$SETTINGS_FILE"
+  fi
+  info "$EVENT hook '$CMD' added"
+}
+
+remove_hook() {
+  EVENT="$1"; CMD="$2"
+  [ -f "$SETTINGS_FILE" ] || return 0
+  grep -q "$CMD" "$SETTINGS_FILE" || return 0
+  TMP="${SETTINGS_FILE}.tmp"
+  jq --arg cmd "$CMD" --arg ev "$EVENT" '
+    if .hooks[$ev] then
+      .hooks[$ev] |= map(select(.hooks | all(.command != $cmd)))
+      | if .hooks[$ev] == [] then del(.hooks[$ev]) else . end
+    else . end
+  ' "$SETTINGS_FILE" > "$TMP" && mv "$TMP" "$SETTINGS_FILE"
+  info "$EVENT hook '$CMD' removed"
+}
+
+# --- Install / Uninstall ---
+
 install() {
   check_deps
   detect_shell
@@ -60,35 +309,31 @@ install() {
   echo "  Installing claude-restart..."
   echo ""
 
-  # 1. Create directories
   mkdir -p "$SCRIPTS_DIR" "$COMMANDS_DIR" "$TMP_DIR"
   info "Directories ready"
 
-  # 2. Copy scripts
-  cp "$SCRIPT_DIR/scripts/claude-wrapper.sh" "$SCRIPTS_DIR/claude-wrapper.sh"
+  install_wrapper
+
   cp "$SCRIPT_DIR/scripts/capture-session-id.sh" "$SCRIPTS_DIR/capture-session-id.sh"
   cp "$SCRIPT_DIR/scripts/restart-hook.sh" "$SCRIPTS_DIR/restart-hook.sh"
-  chmod +x "$SCRIPTS_DIR/claude-wrapper.sh" "$SCRIPTS_DIR/capture-session-id.sh" "$SCRIPTS_DIR/restart-hook.sh"
-  info "Scripts installed"
+  chmod +x "$SCRIPTS_DIR/capture-session-id.sh" "$SCRIPTS_DIR/restart-hook.sh"
+  info "Restart hook scripts installed"
 
-  # 3. Copy command
   cp "$SCRIPT_DIR/commands/restart.md" "$COMMANDS_DIR/restart.md"
-  info "Command /restart installed"
+  info "Slash command /restart installed"
 
-  # 4. Add shell function (idempotent)
   if [ -n "$RC_FILE" ]; then
     if [ "$SHELL_NAME" = "fish" ]; then
-      install_fish
+      fish_register
     else
-      install_posix_shell
+      migrate_legacy_block "$RC_FILE" "$LEGACY_MARKER_START" "$LEGACY_MARKER_END" "$TOOL_NAME"
+      migrate_legacy_block "$RC_FILE" "# claude-session-handoff: start" "# claude-session-handoff: end" "claude-session-handoff"
+      rc_block_register "$RC_FILE" "$TOOL_NAME"
     fi
   fi
 
-  # 5. Add SessionStart hook to settings.json
-  install_hook
-
-  # 6. Add UserPromptSubmit hook for zero-token restart
-  install_restart_hook
+  add_hook SessionStart "~/.claude/scripts/capture-session-id.sh"
+  add_hook UserPromptSubmit "~/.claude/scripts/restart-hook.sh"
 
   echo ""
   echo "  Done! Open a new terminal and run 'claude' to start."
@@ -96,130 +341,6 @@ install() {
   echo ""
 }
 
-install_posix_shell() {
-  # Check if already installed
-  if [ -f "$RC_FILE" ] && grep -q "$MARKER_START" "$RC_FILE"; then
-    info "Shell function already in $RC_FILE (skipped)"
-    return
-  fi
-
-  cat >> "$RC_FILE" << 'SHELL_FUNC'
-
-# claude-restart: start
-# Wrapper that enables /restart inside Claude Code sessions.
-# See: https://github.com/yacb2/claude-restart
-claude() {
-  ~/.claude/scripts/claude-wrapper.sh "$@"
-}
-# claude-restart: end
-SHELL_FUNC
-
-  info "Shell function added to $RC_FILE"
-}
-
-install_fish() {
-  # Fish uses function files, not rc appending
-  FISH_DIR="$HOME/.config/fish/functions"
-  mkdir -p "$FISH_DIR"
-
-  if [ -f "$FISH_DIR/claude.fish" ] && grep -q "claude-restart" "$FISH_DIR/claude.fish"; then
-    info "Fish function already installed (skipped)"
-    return
-  fi
-
-  # Back up existing claude.fish if it exists (user may have custom content)
-  if [ -f "$FISH_DIR/claude.fish" ]; then
-    cp "$FISH_DIR/claude.fish" "$FISH_DIR/claude.fish.backup"
-    warn "Existing claude.fish backed up to claude.fish.backup"
-  fi
-
-  cat > "$FISH_DIR/claude.fish" << 'FISH_FUNC'
-# claude-restart: Wrapper that enables /restart inside Claude Code sessions.
-# See: https://github.com/yacb2/claude-restart
-function claude
-  ~/.claude/scripts/claude-wrapper.sh $argv
-end
-FISH_FUNC
-
-  info "Fish function installed at $FISH_DIR/claude.fish"
-}
-
-install_hook() {
-  # If settings.json doesn't exist, create minimal one
-  if [ ! -f "$SETTINGS_FILE" ]; then
-    cat > "$SETTINGS_FILE" << 'SETTINGS'
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/scripts/capture-session-id.sh"
-          }
-        ]
-      }
-    ]
-  }
-}
-SETTINGS
-    info "Created settings.json with SessionStart hook"
-    return
-  fi
-
-  # Check if hook already exists
-  if grep -q "capture-session-id.sh" "$SETTINGS_FILE"; then
-    info "SessionStart hook already configured (skipped)"
-    return
-  fi
-
-  # Merge hook into existing settings.json using jq
-  if jq -e '.hooks.SessionStart' "$SETTINGS_FILE" >/dev/null 2>&1; then
-    # SessionStart array exists — append our hook
-    TMP_SETTINGS="${SETTINGS_FILE}.tmp"
-    jq '.hooks.SessionStart += [{"hooks": [{"type": "command", "command": "~/.claude/scripts/capture-session-id.sh"}]}]' \
-      "$SETTINGS_FILE" > "$TMP_SETTINGS" && mv "$TMP_SETTINGS" "$SETTINGS_FILE"
-    info "Appended hook to existing SessionStart array"
-  elif jq -e '.hooks' "$SETTINGS_FILE" >/dev/null 2>&1; then
-    # hooks object exists but no SessionStart — add it
-    TMP_SETTINGS="${SETTINGS_FILE}.tmp"
-    jq '.hooks.SessionStart = [{"hooks": [{"type": "command", "command": "~/.claude/scripts/capture-session-id.sh"}]}]' \
-      "$SETTINGS_FILE" > "$TMP_SETTINGS" && mv "$TMP_SETTINGS" "$SETTINGS_FILE"
-    info "Added SessionStart hook to existing hooks"
-  else
-    # No hooks object — add it
-    TMP_SETTINGS="${SETTINGS_FILE}.tmp"
-    jq '. + {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "~/.claude/scripts/capture-session-id.sh"}]}]}}' \
-      "$SETTINGS_FILE" > "$TMP_SETTINGS" && mv "$TMP_SETTINGS" "$SETTINGS_FILE"
-    info "Added hooks with SessionStart to settings.json"
-  fi
-}
-
-install_restart_hook() {
-  # Check if hook already exists
-  if grep -q "restart-hook.sh" "$SETTINGS_FILE"; then
-    info "UserPromptSubmit restart hook already configured (skipped)"
-    return
-  fi
-
-  # Merge hook into existing settings.json using jq
-  TMP_SETTINGS="${SETTINGS_FILE}.tmp"
-  if jq -e '.hooks.UserPromptSubmit' "$SETTINGS_FILE" >/dev/null 2>&1; then
-    jq '.hooks.UserPromptSubmit += [{"hooks": [{"type": "command", "command": "~/.claude/scripts/restart-hook.sh"}]}]' \
-      "$SETTINGS_FILE" > "$TMP_SETTINGS" && mv "$TMP_SETTINGS" "$SETTINGS_FILE"
-    info "Appended restart hook to existing UserPromptSubmit array"
-  elif jq -e '.hooks' "$SETTINGS_FILE" >/dev/null 2>&1; then
-    jq '.hooks.UserPromptSubmit = [{"hooks": [{"type": "command", "command": "~/.claude/scripts/restart-hook.sh"}]}]' \
-      "$SETTINGS_FILE" > "$TMP_SETTINGS" && mv "$TMP_SETTINGS" "$SETTINGS_FILE"
-    info "Added UserPromptSubmit restart hook"
-  else
-    jq '. + {"hooks": {"UserPromptSubmit": [{"hooks": [{"type": "command", "command": "~/.claude/scripts/restart-hook.sh"}]}]}}' \
-      "$SETTINGS_FILE" > "$TMP_SETTINGS" && mv "$TMP_SETTINGS" "$SETTINGS_FILE"
-    info "Added hooks with UserPromptSubmit to settings.json"
-  fi
-}
-
-# --- Uninstall ---
 uninstall() {
   detect_shell
 
@@ -227,63 +348,33 @@ uninstall() {
   echo "  Uninstalling claude-restart..."
   echo ""
 
-  # 1. Remove scripts
-  rm -f "$SCRIPTS_DIR/claude-wrapper.sh" "$SCRIPTS_DIR/capture-session-id.sh" "$SCRIPTS_DIR/restart-hook.sh"
-  info "Scripts removed"
+  rm -f "$SCRIPTS_DIR/capture-session-id.sh" "$SCRIPTS_DIR/restart-hook.sh"
+  info "Restart hook scripts removed"
 
-  # 2. Remove command
   rm -f "$COMMANDS_DIR/restart.md"
-  info "Command /restart removed"
+  info "Slash command removed"
 
-  # 3. Remove tmp files (restart flag + all per-directory session files)
-  rm -f "$TMP_DIR/restart-flag" "$TMP_DIR"/session-id*
+  rm -f "$TMP_DIR"/restart-flag-* "$TMP_DIR"/session-id-*
   info "Temp files cleaned"
 
-  # 4. Remove shell function
-  if [ -n "$RC_FILE" ] && [ -f "$RC_FILE" ]; then
+  if [ -n "$RC_FILE" ]; then
     if [ "$SHELL_NAME" = "fish" ]; then
-      if [ -f "$HOME/.config/fish/functions/claude.fish" ] && grep -q "claude-restart" "$HOME/.config/fish/functions/claude.fish"; then
-        rm -f "$HOME/.config/fish/functions/claude.fish"
-        # Restore backup if it exists
-        if [ -f "$HOME/.config/fish/functions/claude.fish.backup" ]; then
-          mv "$HOME/.config/fish/functions/claude.fish.backup" "$HOME/.config/fish/functions/claude.fish"
-          info "Fish function removed (previous claude.fish restored from backup)"
-        else
-          info "Fish function removed"
-        fi
-      fi
+      fish_unregister
     else
-      if grep -q "$MARKER_START" "$RC_FILE"; then
-        # Remove everything between markers (inclusive)
-        TMP_RC="${RC_FILE}.tmp"
-        sed "/$MARKER_START/,/$MARKER_END/d" "$RC_FILE" > "$TMP_RC" && mv "$TMP_RC" "$RC_FILE"
-        info "Shell function removed from $RC_FILE"
-      fi
+      rc_block_unregister "$RC_FILE" "$TOOL_NAME"
     fi
   fi
 
-  # 5. Remove SessionStart hook from settings.json
-  if [ -f "$SETTINGS_FILE" ] && grep -q "capture-session-id.sh" "$SETTINGS_FILE"; then
-    TMP_SETTINGS="${SETTINGS_FILE}.tmp"
-    jq '
-      if .hooks.SessionStart then
-        .hooks.SessionStart |= map(select(.hooks | all(.command != "~/.claude/scripts/capture-session-id.sh")))
-        | if .hooks.SessionStart == [] then del(.hooks.SessionStart) else . end
-      else . end
-    ' "$SETTINGS_FILE" > "$TMP_SETTINGS" && mv "$TMP_SETTINGS" "$SETTINGS_FILE"
-    info "SessionStart hook removed from settings.json"
-  fi
+  remove_hook SessionStart "~/.claude/scripts/capture-session-id.sh"
+  remove_hook UserPromptSubmit "~/.claude/scripts/restart-hook.sh"
 
-  # 6. Remove UserPromptSubmit restart hook from settings.json
-  if [ -f "$SETTINGS_FILE" ] && grep -q "restart-hook.sh" "$SETTINGS_FILE"; then
-    TMP_SETTINGS="${SETTINGS_FILE}.tmp"
-    jq '
-      if .hooks.UserPromptSubmit then
-        .hooks.UserPromptSubmit |= map(select(.hooks | all(.command != "~/.claude/scripts/restart-hook.sh")))
-        | if .hooks.UserPromptSubmit == [] then del(.hooks.UserPromptSubmit) else . end
-      else . end
-    ' "$SETTINGS_FILE" > "$TMP_SETTINGS" && mv "$TMP_SETTINGS" "$SETTINGS_FILE"
-    info "UserPromptSubmit restart hook removed from settings.json"
+  if [ -f "$WRAPPER_PATH" ] && [ -n "$RC_FILE" ] && [ -f "$RC_FILE" ]; then
+    if ! grep -q "$SHARED_MARKER_START" "$RC_FILE" 2>/dev/null; then
+      rm -f "$WRAPPER_PATH"
+      info "Shared wrapper removed (no tools left)"
+    else
+      info "Shared wrapper kept (other tools still registered)"
+    fi
   fi
 
   echo ""
@@ -291,11 +382,8 @@ uninstall() {
   echo ""
 }
 
-# --- Main ---
 case "${1:-}" in
-  --uninstall|-u)
-    uninstall
-    ;;
+  --uninstall|-u) uninstall ;;
   --help|-h)
     echo "Usage: $0 [--uninstall]"
     echo ""
@@ -305,10 +393,6 @@ case "${1:-}" in
     echo "  --uninstall, -u   Remove all claude-restart files and configuration"
     echo "  --help, -h        Show this help message"
     ;;
-  "")
-    install
-    ;;
-  *)
-    error "Unknown option: $1. Use --help for usage."
-    ;;
+  "") install ;;
+  *) error "Unknown option: $1. Use --help for usage." ;;
 esac

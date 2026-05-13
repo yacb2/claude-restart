@@ -1,26 +1,40 @@
 #!/bin/sh
-# Claude Code restart wrapper.
-# Runs claude normally. If a restart flag is detected after exit,
-# automatically resumes the same session with a fresh process.
+# claude-wrapper version: 2
+# Unified wrapper for claude-restart and claude-session-handoff.
 #
-# Each wrapper instance is identified by its PID (CLAUDE_RESTART_ID).
-# The restart flag and session file are scoped per wrapper, so multiple
-# sessions — even in the same directory — never collide.
+# Runs claude normally. After each exit, checks per-PID flag files in
+# ~/.claude/tmp/ and decides what to do next:
 #
-# This script is POSIX-compatible (works with sh, bash, zsh, dash).
+#   handoff-flag-<pid>  -> launch a fresh session (SessionStart hook injects payload)
+#   restart-flag-<pid>  -> resume the same session with --resume <id>
+#   (none)              -> exit
+#
+# If both flags are present, handoff wins (a fresh session takes precedence
+# over resuming an old one).
+#
+# Each wrapper instance is identified by its PID, exported as both
+# CLAUDE_RESTART_ID and CLAUDE_HANDOFF_ID so hooks from either tool work.
+#
+# POSIX-compatible (sh, bash, zsh, dash).
+#
+# This file is co-owned by:
+#   - https://github.com/yacb2/claude-restart
+#   - https://github.com/yoelacevedo/claude-session-handoff  (rename as published)
+# Both installers write the highest version they ship; the file is byte-for-byte
+# identical across repos.
 
-CLAUDE_RESTART_DIR="${HOME}/.claude/tmp"
+CLAUDE_TMP_DIR="${HOME}/.claude/tmp"
 WRAPPER_ID=$$
-RESTART_FLAG="${CLAUDE_RESTART_DIR}/restart-flag-${WRAPPER_ID}"
-SESSION_FILE="${CLAUDE_RESTART_DIR}/session-id-${WRAPPER_ID}"
+RESTART_FLAG="${CLAUDE_TMP_DIR}/restart-flag-${WRAPPER_ID}"
+SESSION_FILE="${CLAUDE_TMP_DIR}/session-id-${WRAPPER_ID}"
+HANDOFF_FLAG="${CLAUDE_TMP_DIR}/handoff-flag-${WRAPPER_ID}"
+HANDOFF_PAYLOAD="${CLAUDE_TMP_DIR}/handoff-payload-${WRAPPER_ID}"
 
-# Export wrapper ID so the restart command and hooks can reference it
 export CLAUDE_RESTART_ID="$WRAPPER_ID"
+export CLAUDE_HANDOFF_ID="$WRAPPER_ID"
 
-# Ensure tmp directory exists
-mkdir -p "$CLAUDE_RESTART_DIR"
+mkdir -p "$CLAUDE_TMP_DIR"
 
-# Find the real claude binary (not a shell function/alias)
 find_claude_binary() {
   SAVED_IFS="$IFS"
   IFS=:
@@ -37,24 +51,45 @@ find_claude_binary() {
 
 CLAUDE_BIN=""
 if ! find_claude_binary; then
-  echo "Error: claude binary not found in PATH"
+  echo "Error: claude binary not found in PATH" >&2
   exit 1
 fi
 
-# Clean up temp files on exit (normal or interrupted)
 cleanup() {
-  rm -f "$RESTART_FLAG" "$SESSION_FILE"
+  rm -f "$RESTART_FLAG" "$SESSION_FILE" "$HANDOFF_FLAG" "$HANDOFF_PAYLOAD"
 }
 trap cleanup EXIT
 
-# Clean up any stale restart flag from previous sessions
-rm -f "$RESTART_FLAG"
+# Clear any stale state from a prior process that happened to reuse this PID
+rm -f "$RESTART_FLAG" "$SESSION_FILE" "$HANDOFF_FLAG" "$HANDOFF_PAYLOAD"
 
-# First run: pass through all original arguments
+# First run: pass through original arguments
 "$CLAUDE_BIN" "$@"
 
-# After claude exits, check if restart was requested
-while [ -f "$RESTART_FLAG" ]; do
+# Dispatch loop — runs until no flag is set after claude exits
+while [ -f "$HANDOFF_FLAG" ] || [ -f "$RESTART_FLAG" ]; do
+  if [ -f "$HANDOFF_FLAG" ]; then
+    # Handoff wins over restart if both were somehow set.
+    rm -f "$HANDOFF_FLAG" "$RESTART_FLAG" "$SESSION_FILE"
+
+    if [ ! -s "$HANDOFF_PAYLOAD" ]; then
+      echo ""
+      echo "  ⚠ Handoff sin payload — la sesión nueva arranca limpia, sin contexto sembrado."
+      echo "    Si querías preservar contexto, pide 'handoff: <texto>' o invoca el skill"
+      echo "    de handoff para que Claude genere el prompt antes de cerrar la sesión."
+      echo ""
+    else
+      PAYLOAD_BYTES=$(wc -c < "$HANDOFF_PAYLOAD" | tr -d ' ')
+      echo ""
+      echo "  ↻ Handoff — iniciando sesión nueva con ${PAYLOAD_BYTES} bytes de contexto sembrado…"
+      echo ""
+    fi
+
+    "$CLAUDE_BIN"
+    continue
+  fi
+
+  # Restart path
   rm -f "$RESTART_FLAG"
 
   SESSION_ID=""
@@ -63,8 +98,6 @@ while [ -f "$RESTART_FLAG" ]; do
   fi
 
   if [ -n "$SESSION_ID" ]; then
-    # Warn if session file is large (compaction is in-memory only in Claude Code,
-    # so --resume reloads the full uncompacted history from disk)
     SESSION_JSONL=$(find "$HOME/.claude/projects" -name "${SESSION_ID}.jsonl" 2>/dev/null | head -1)
     if [ -n "$SESSION_JSONL" ]; then
       FILE_SIZE=$(wc -c < "$SESSION_JSONL" | tr -d ' ')
@@ -81,8 +114,7 @@ while [ -f "$RESTART_FLAG" ]; do
     echo ""
     "$CLAUDE_BIN" --resume "$SESSION_ID"
     RESUME_EXIT=$?
-    # Only fall back to new session if resume genuinely failed (not a /restart)
-    if [ $RESUME_EXIT -ne 0 ] && [ ! -f "$RESTART_FLAG" ]; then
+    if [ $RESUME_EXIT -ne 0 ] && [ ! -f "$RESTART_FLAG" ] && [ ! -f "$HANDOFF_FLAG" ]; then
       echo ""
       echo "  ⚠ Resume failed — starting fresh session…"
       echo ""
