@@ -181,6 +181,8 @@ This removes all files, the shell function, and all hooks.
 - **`restart` does nothing**: Make sure you opened a new terminal after installing. The `claude()` wrapper function needs to be loaded from your shell rc file.
 - **Falls back to new session**: The SessionStart hook hasn't fired yet. Run `restart` again — the hook fires on resume and captures the ID.
 - **Resumes the wrong session**: Fixed in v0.3. Session IDs are now scoped per wrapper instance (not per directory), so multiple sessions in the same project don't collide. Re-run `./install.sh` to update.
+- **`restart` hangs (SIGTERM ignored)**: Set `CLAUDE_RESTART_FORCE_AFTER=<seconds>` (e.g. `10`) before launching `claude`. If SIGTERM doesn't take effect within that window, the hook escalates to SIGKILL. Disabled by default so it never interrupts SessionEnd hooks or slow cleanup.
+- **Debugging the hook**: Set `CLAUDE_RESTART_LOG=<file path>` before launching `claude` to trace hook execution (intercepted prompts, block reasons, SIGTERM timing) to that file.
 - **Windows (WSL)**: The installer works without changes inside WSL. Run it from your WSL terminal.
 
 ## Coexistence with `claude-session-handoff`
