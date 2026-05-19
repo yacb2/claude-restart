@@ -22,7 +22,7 @@ INPUT=$(cat)
 if command -v jq >/dev/null 2>&1; then
   PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty')
 else
-  PROMPT=$(echo "$INPUT" | grep -o '"prompt":"[^"]*"' | head -1 | sed 's/^"prompt":"//;s/"$//')
+  PROMPT=$(echo "$INPUT" | grep -o '"prompt"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/^"prompt"[[:space:]]*:[[:space:]]*"//;s/"$//')
 fi
 
 # Normalize: trim whitespace and lowercase
