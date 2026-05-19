@@ -50,6 +50,13 @@ fi
 # merely alive. A nested Claude session or tmux pane can inherit a live
 # CLAUDE_RESTART_ID that belongs to a different wrapper; kill -0 alone
 # would pass but the restart flag would go to the wrong wrapper.
+#
+# Known limitation: if a nested Claude is started without going through
+# the wrapper (e.g. `command claude` inside an existing wrapped session),
+# the outer wrapper IS in the ancestor chain, so this check passes. A
+# complete fix requires a per-invocation token set by the wrapper — out
+# of scope for this hook-only change. The ancestor check is still strictly
+# better than the prior code (which accepted any non-empty env var).
 is_wrapper_ancestor() {
   _pid=$$
   while true; do
