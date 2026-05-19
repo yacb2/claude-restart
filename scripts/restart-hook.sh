@@ -46,11 +46,25 @@ if [ -z "$CLAUDE_RESTART_ID" ]; then
 fi
 
 # Guard against stale or inherited env vars (SSH forwarding, tmux, manual
-# export) — verify the wrapper process is actually alive.
-if ! kill -0 "$CLAUDE_RESTART_ID" 2>/dev/null; then
-  MSG="restart is not available — wrapper PID $CLAUDE_RESTART_ID is not running (stale env var?)."
+# export) — verify the wrapper is an ancestor of the current process, not
+# merely alive. A nested Claude session or tmux pane can inherit a live
+# CLAUDE_RESTART_ID that belongs to a different wrapper; kill -0 alone
+# would pass but the restart flag would go to the wrong wrapper.
+is_wrapper_ancestor() {
+  _pid=$$
+  while true; do
+    _pid=$(ps -o ppid= -p "$_pid" 2>/dev/null | tr -d ' ')
+    case "$_pid" in
+      ''|0|1) return 1 ;;
+    esac
+    [ "$_pid" = "$CLAUDE_RESTART_ID" ] && return 0
+  done
+}
+
+if ! is_wrapper_ancestor; then
+  MSG="restart is not available — wrapper PID $CLAUDE_RESTART_ID is not an ancestor of this session (stale or inherited env var?)."
   MSG="$MSG Start a new terminal and run claude to use restart."
-  log "blocked: wrapper PID $CLAUDE_RESTART_ID not alive"
+  log "blocked: wrapper PID $CLAUDE_RESTART_ID not in ancestor chain"
   printf '{"decision":"block","reason":"%s"}' "$MSG"
   exit 0
 fi
