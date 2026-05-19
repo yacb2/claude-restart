@@ -8,7 +8,7 @@
 #
 # Env vars:
 #   CLAUDE_RESTART_LOG         Path to a log file for hook tracing
-#   CLAUDE_RESTART_FORCE_AFTER Seconds before SIGKILL fallback (default: 3)
+#   CLAUDE_RESTART_FORCE_AFTER Seconds before SIGKILL fallback (disabled by default)
 
 log() {
   if [ -n "$CLAUDE_RESTART_LOG" ]; then
@@ -84,16 +84,19 @@ RESTART_FLAG="${CLAUDE_RESTART_DIR}/restart-flag-${CLAUDE_RESTART_ID}"
 mkdir -p "$CLAUDE_RESTART_DIR"
 touch "$RESTART_FLAG"
 
-# SIGKILL fallback: if SIGTERM doesn't take effect within the timeout,
-# force-kill to prevent the session from hanging indefinitely.
-FORCE_AFTER="${CLAUDE_RESTART_FORCE_AFTER:-3}"
-(
-  sleep "$FORCE_AFTER"
-  kill -0 $PPID 2>/dev/null && kill -KILL $PPID 2>/dev/null
-) >/dev/null 2>&1 &
+# SIGKILL fallback: opt-in via CLAUDE_RESTART_FORCE_AFTER (seconds).
+# Disabled by default to avoid interrupting SessionEnd hooks or slow
+# cleanup. Set to e.g. 10 if you hit cases where SIGTERM hangs.
+FORCE_AFTER="${CLAUDE_RESTART_FORCE_AFTER:-}"
+if [ -n "$FORCE_AFTER" ]; then
+  (
+    sleep "$FORCE_AFTER"
+    kill -0 $PPID 2>/dev/null && kill -KILL $PPID 2>/dev/null
+  ) >/dev/null 2>&1 &
+fi
 
 kill -TERM $PPID 2>/dev/null
-log "sent SIGTERM to PID $PPID (SIGKILL fallback in ${FORCE_AFTER}s)"
+log "sent SIGTERM to PID $PPID${FORCE_AFTER:+ (SIGKILL fallback in ${FORCE_AFTER}s)}"
 
 # Block the prompt from reaching the model
 printf '{"decision":"block","reason":"Restart initiated via hook"}'
