@@ -1,5 +1,5 @@
 #!/bin/sh
-# claude-wrapper version: 4
+# claude-wrapper version: 5
 # Unified wrapper for claude-restart and claude-session-handoff.
 #
 # Runs claude normally. After each exit, checks per-PID flag files in
@@ -111,6 +111,13 @@ while [ -f "$HANDOFF_FLAG" ] || [ -f "$RESTART_FLAG" ]; do
   if [ -f "$HANDOFF_FLAG" ]; then
     # Handoff wins over restart if both were somehow set.
     rm -f "$HANDOFF_FLAG" "$RESTART_FLAG" "$SESSION_FILE"
+
+    # Reset per iteration: PAYLOAD_BYTES is assigned only in the payload-present
+    # branch below, so without this a payload-less handoff following a seeded one
+    # would inherit the previous iteration's value, take the kickoff branch, and
+    # relaunch with "continue" — contradicting the "arranca limpia" warning it
+    # just printed. Covered by tests/wrapper-dispatch.sh.
+    PAYLOAD_BYTES=""
 
     if [ ! -s "$HANDOFF_PAYLOAD" ]; then
       echo ""
