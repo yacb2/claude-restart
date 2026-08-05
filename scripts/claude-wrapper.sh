@@ -112,33 +112,32 @@ while [ -f "$HANDOFF_FLAG" ] || [ -f "$RESTART_FLAG" ]; do
     # Handoff wins over restart if both were somehow set.
     rm -f "$HANDOFF_FLAG" "$RESTART_FLAG" "$SESSION_FILE"
 
-    # Reset per iteration: PAYLOAD_BYTES is assigned only in the payload-present
-    # branch below, so without this a payload-less handoff following a seeded one
-    # would inherit the previous iteration's value, take the kickoff branch, and
-    # relaunch with "continue" — contradicting the "arranca limpia" warning it
-    # just printed. Covered by tests/wrapper-dispatch.sh.
-    PAYLOAD_BYTES=""
-
-    if [ ! -s "$HANDOFF_PAYLOAD" ]; then
+    # One test, one branch. An earlier version tested the payload twice — once
+    # via `[ -s "$HANDOFF_PAYLOAD" ]` to pick the message, then again via a
+    # `PAYLOAD_BYTES` variable to pick the launch form — and the variable was
+    # never reset per iteration, so a payload-less handoff following a seeded
+    # one inherited the previous value and relaunched with the kickoff prompt
+    # while printing "arranca limpia". Nothing between the two tests touches
+    # the payload (the next session's SessionStart hook consumes it, and that
+    # session has not started), so they were the same test. Folding them makes
+    # the stale carry structurally impossible rather than patched.
+    # Covered by tests/wrapper-dispatch.sh.
+    if [ -s "$HANDOFF_PAYLOAD" ]; then
+      PAYLOAD_BYTES=$(wc -c < "$HANDOFF_PAYLOAD" | tr -d ' ')
+      echo ""
+      echo "  ↻ Handoff — iniciando sesión nueva con ${PAYLOAD_BYTES} bytes de contexto sembrado…"
+      echo ""
+      # A seeded payload gets an initial prompt as a positional arg so the new
+      # session starts processing without waiting for the user to type.
+      # SessionStart still fires first and injects the handoff as
+      # additionalContext; this prompt becomes the model's first user message.
+      run_claude "continue"
+    else
       echo ""
       echo "  ⚠ Handoff sin payload — la sesión nueva arranca limpia, sin contexto sembrado."
       echo "    Si querías preservar contexto, pide 'handoff: <texto>' o invoca el skill"
       echo "    de handoff para que Claude genere el prompt antes de cerrar la sesión."
       echo ""
-    else
-      PAYLOAD_BYTES=$(wc -c < "$HANDOFF_PAYLOAD" | tr -d ' ')
-      echo ""
-      echo "  ↻ Handoff — iniciando sesión nueva con ${PAYLOAD_BYTES} bytes de contexto sembrado…"
-      echo ""
-    fi
-
-    # If a payload was seeded, pass an initial prompt as a positional arg so the
-    # new session starts processing automatically without waiting for the user
-    # to type. SessionStart still fires first and injects the handoff as
-    # additionalContext; this prompt becomes the model's first user message.
-    if [ -n "$PAYLOAD_BYTES" ]; then
-      run_claude "continue"
-    else
       run_claude
     fi
     continue
