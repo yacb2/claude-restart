@@ -67,6 +67,35 @@ detect_shell() {
   esac
 }
 
+# --- Atomic file installation ---
+
+# Install SRC at DST by writing a sibling temp file and renaming it into place.
+# Args: $1 = source, $2 = destination, $3 = optional chmod mode.
+#
+# `cp` onto DST truncates and rewrites DST's EXISTING inode. A POSIX shell reads
+# a script incrementally, and claude-wrapper.sh blocks inside `run_claude "$@"`
+# for the whole session with its dispatch loop still unread — so overwriting it
+# in place makes that shell resume at a byte offset that now points into
+# different content, in the process that owns the user's terminal. Renaming
+# swaps the directory entry to a NEW inode instead; the running shell keeps its
+# open file description on the old one and finishes cleanly.
+#
+# The temp file must be a sibling of DST: `mv` is atomic only within a
+# filesystem, and across one it degrades to copy-and-unlink.
+#
+# Part of the shared wrapper protocol: claude-session-handoff's installer writes
+# the same file the same way, and covers it there with
+# tests/wrapper-atomic-install.sh.
+atomic_install() {
+  SRC="$1"; DST="$2"; MODE="${3:-}"
+  DST_TMP="$DST.new.$$"
+  cp "$SRC" "$DST_TMP"
+  if [ -n "$MODE" ]; then
+    chmod "$MODE" "$DST_TMP"
+  fi
+  mv "$DST_TMP" "$DST"
+}
+
 # --- Shared wrapper management ---
 
 wrapper_version_of() {
@@ -85,8 +114,7 @@ install_wrapper() {
   OURS=$(wrapper_version_of "$SCRIPT_DIR/scripts/claude-wrapper.sh")
   THEIRS=$(wrapper_version_of "$WRAPPER_PATH")
   if [ "$OURS" -gt "$THEIRS" ]; then
-    cp "$SCRIPT_DIR/scripts/claude-wrapper.sh" "$WRAPPER_PATH"
-    chmod +x "$WRAPPER_PATH"
+    atomic_install "$SCRIPT_DIR/scripts/claude-wrapper.sh" "$WRAPPER_PATH" 755
     if [ "$THEIRS" -eq 0 ]; then
       info "Shared wrapper installed (v$OURS)"
     else
@@ -314,12 +342,11 @@ install() {
 
   install_wrapper
 
-  cp "$SCRIPT_DIR/scripts/capture-session-id.sh" "$SCRIPTS_DIR/capture-session-id.sh"
-  cp "$SCRIPT_DIR/scripts/restart-hook.sh" "$SCRIPTS_DIR/restart-hook.sh"
-  chmod +x "$SCRIPTS_DIR/capture-session-id.sh" "$SCRIPTS_DIR/restart-hook.sh"
+  atomic_install "$SCRIPT_DIR/scripts/capture-session-id.sh" "$SCRIPTS_DIR/capture-session-id.sh" 755
+  atomic_install "$SCRIPT_DIR/scripts/restart-hook.sh" "$SCRIPTS_DIR/restart-hook.sh" 755
   info "Restart hook scripts installed"
 
-  cp "$SCRIPT_DIR/commands/restart.md" "$COMMANDS_DIR/restart.md"
+  atomic_install "$SCRIPT_DIR/commands/restart.md" "$COMMANDS_DIR/restart.md"
   info "Slash command /restart installed"
 
   if [ -n "$RC_FILE" ]; then
