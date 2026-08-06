@@ -1,5 +1,5 @@
 #!/bin/sh
-# claude-wrapper version: 5
+# claude-wrapper version: 6
 # Unified wrapper for claude-restart and claude-session-handoff.
 #
 # Runs claude normally. After each exit, checks per-PID flag files in
@@ -26,6 +26,9 @@
 # sentinel, and is the only process that ever calls `kill`. The skill side
 # only needs `touch`, which is benign.
 #
+# v6 pays the two debts that backgrounding claude had quietly incurred:
+# its stdin and its exit status. See `exec 3<&0` and LAST_CLAUDE_EXIT below.
+#
 # POSIX-compatible (sh, bash, zsh, dash).
 #
 # This file is co-owned by:
@@ -46,6 +49,25 @@ export CLAUDE_RESTART_ID="$WRAPPER_ID"
 export CLAUDE_HANDOFF_ID="$WRAPPER_ID"
 
 mkdir -p "$CLAUDE_TMP_DIR"
+
+# Hold the wrapper's own stdin on fd 3 so claude can be given it explicitly.
+#
+# run_claude backgrounds claude to run the exit watcher alongside it, and POSIX
+# assigns /dev/null to the stdin of an asynchronous list when job control is
+# off — which it is in a script — so `cat notes.md | claude -p …` reached claude
+# with no input and no error. Since the rc block replaces `claude` globally,
+# that was every piped or redirected use, not just the handoff flow.
+#
+# The rule applies only "before any explicit redirections", so `<&3` at the
+# launch site wins. `0<&0` would not: a self-dup is exactly the form a shell may
+# treat as a no-op.
+exec 3<&0
+
+# Status of the most recent claude run. The script's last command is the
+# dispatch `while` loop, whose status says nothing about claude — and a loop
+# whose body never ran exits 0 — so the wrapper exited 0 unconditionally and
+# `claude -p … || handle_error` could never take the error branch.
+LAST_CLAUDE_EXIT=0
 
 find_claude_binary() {
   SAVED_IFS="$IFS"
@@ -81,7 +103,7 @@ rm -f "$RESTART_FLAG" "$SESSION_FILE" "$HANDOFF_FLAG" "$HANDOFF_PAYLOAD" "$HANDO
 run_claude() {
   rm -f "$HANDOFF_EXIT"
 
-  "$CLAUDE_BIN" "$@" &
+  "$CLAUDE_BIN" "$@" <&3 &
   CLAUDE_PID=$!
 
   (
@@ -100,6 +122,9 @@ run_claude() {
   kill "$WATCHER_PID" 2>/dev/null
   wait "$WATCHER_PID" 2>/dev/null
   rm -f "$HANDOFF_EXIT"
+  # Recorded as well as returned: callers inside the dispatch loop discard the
+  # return value, and the loop is the last thing the script runs.
+  LAST_CLAUDE_EXIT=$CLAUDE_EXIT
   return $CLAUDE_EXIT
 }
 
@@ -181,3 +206,5 @@ while [ -f "$HANDOFF_FLAG" ] || [ -f "$RESTART_FLAG" ]; do
     run_claude "$@"
   fi
 done
+
+exit "$LAST_CLAUDE_EXIT"
