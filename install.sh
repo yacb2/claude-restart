@@ -47,8 +47,14 @@ error() { echo "  [x] $1" >&2; exit 1; }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-check_deps() {
+# Uninstall needs jq too — it rewrites settings.json — but must not demand
+# `claude`, which may well be gone by the time someone uninstalls.
+check_jq() {
   command -v jq >/dev/null 2>&1 || error "jq is required. Install: brew install jq (macOS) or apt install jq (Linux)"
+}
+
+check_deps() {
+  check_jq
   command -v claude >/dev/null 2>&1 || error "claude is not installed or not in PATH. Install Claude Code first: https://docs.anthropic.com/en/docs/claude-code"
 }
 
@@ -346,6 +352,21 @@ ensure_settings() {
   [ -f "$SETTINGS_FILE" ] || printf '{}\n' > "$SETTINGS_FILE"
 }
 
+# Run a jq program over SETTINGS_FILE and install the result, or abort.
+#
+# `jq … > "$TMP" && mv …` looks safe but is not: `set -e` does not fire on a
+# failed AND-list, so a jq that could not parse settings.json left the caller
+# free to print `[+] … hook added` and `Done!` over a file it never wrote.
+settings_apply() {
+  TMP="${SETTINGS_FILE}.tmp"
+  if jq "$@" "$SETTINGS_FILE" > "$TMP"; then
+    mv "$TMP" "$SETTINGS_FILE"
+  else
+    rm -f "$TMP"
+    error "Failed to update $SETTINGS_FILE — left untouched"
+  fi
+}
+
 add_hook() {
   EVENT="$1"; CMD="$2"
   ensure_settings
@@ -353,13 +374,12 @@ add_hook() {
     info "$EVENT hook '$CMD' already configured (skipped)"
     return
   fi
-  TMP="${SETTINGS_FILE}.tmp"
   if jq -e ".hooks.$EVENT" "$SETTINGS_FILE" >/dev/null 2>&1; then
-    jq --arg cmd "$CMD" --arg ev "$EVENT" '.hooks[$ev] += [{"hooks":[{"type":"command","command":$cmd}]}]' "$SETTINGS_FILE" > "$TMP" && mv "$TMP" "$SETTINGS_FILE"
+    settings_apply --arg cmd "$CMD" --arg ev "$EVENT" '.hooks[$ev] += [{"hooks":[{"type":"command","command":$cmd}]}]'
   elif jq -e '.hooks' "$SETTINGS_FILE" >/dev/null 2>&1; then
-    jq --arg cmd "$CMD" --arg ev "$EVENT" '.hooks[$ev] = [{"hooks":[{"type":"command","command":$cmd}]}]' "$SETTINGS_FILE" > "$TMP" && mv "$TMP" "$SETTINGS_FILE"
+    settings_apply --arg cmd "$CMD" --arg ev "$EVENT" '.hooks[$ev] = [{"hooks":[{"type":"command","command":$cmd}]}]'
   else
-    jq --arg cmd "$CMD" --arg ev "$EVENT" '. + {"hooks": {($ev): [{"hooks":[{"type":"command","command":$cmd}]}]}}' "$SETTINGS_FILE" > "$TMP" && mv "$TMP" "$SETTINGS_FILE"
+    settings_apply --arg cmd "$CMD" --arg ev "$EVENT" '. + {"hooks": {($ev): [{"hooks":[{"type":"command","command":$cmd}]}]}}'
   fi
   info "$EVENT hook '$CMD' added"
 }
@@ -368,11 +388,10 @@ remove_hook() {
   EVENT="$1"; CMD="$2"
   [ -f "$SETTINGS_FILE" ] || return 0
   grep -q "$CMD" "$SETTINGS_FILE" || return 0
-  TMP="${SETTINGS_FILE}.tmp"
   # Filter the INNER hook array, then drop groups that became empty. Selecting
   # over the outer array instead takes the whole matcher group down as soon as
   # one hook inside it matches — including hooks the user put there themselves.
-  jq --arg cmd "$CMD" --arg ev "$EVENT" '
+  settings_apply --arg cmd "$CMD" --arg ev "$EVENT" '
     if .hooks[$ev] then
       .hooks[$ev] |= (
         map(.hooks |= map(select(.command != $cmd)))
@@ -380,7 +399,7 @@ remove_hook() {
       )
       | if .hooks[$ev] == [] then del(.hooks[$ev]) else . end
     else . end
-  ' "$SETTINGS_FILE" > "$TMP" && mv "$TMP" "$SETTINGS_FILE"
+  '
   info "$EVENT hook '$CMD' removed"
 }
 
@@ -426,6 +445,10 @@ install() {
 }
 
 uninstall() {
+  # Before anything is deleted: without jq the settings.json rewrites below
+  # cannot happen, and uninstall would report both hooks removed while leaving
+  # them registered against scripts it had just deleted.
+  check_jq
   detect_shell
 
   echo ""
