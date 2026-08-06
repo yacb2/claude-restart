@@ -127,12 +127,62 @@ install_wrapper() {
 
 # --- Shared rc block management (zsh/bash) ---
 
+# True when every start marker in $1 is closed by a later end marker.
+# Args: $1 = file, $2 = start marker, $3 = end marker.
+#
+# A sed range whose closing address never matches runs to end of file, so
+# `sed "\|START|,\|END|d"` on an rc file with one hand-dropped end marker
+# deleted every line below it — no backup, and a success message on the way out.
+block_is_terminated() {
+  awk -v s="$2" -v e="$3" '
+    !inblock && index($0, s) { inblock=1; next }
+    inblock && index($0, e) { inblock=0 }
+    END { exit inblock }
+  ' "$1"
+}
+
+# Print $1 with every $2..$3 marker block removed. Callers must have checked
+# block_is_terminated first; an unterminated block swallows the rest of the file.
+delete_marked_block() {
+  awk -v s="$2" -v e="$3" '
+    !inblock && index($0, s) { inblock=1; next }
+    inblock { if (index($0, e)) inblock=0; next }
+    { print }
+  ' "$1"
+}
+
+# Replace rc file $1 with the output of the command in the remaining args,
+# keeping a .bak of what it replaced (only ever the state before the most
+# recent rewrite — a second run overwrites it).
+#
+# The filter's status is checked with `if`, not `&&`: `set -e` does not fire on
+# a failed AND-list, so `filter > tmp && mv` leaves the caller free to print a
+# success message after having written nothing.
+#
+# Writes THROUGH the rc file rather than renaming over it — a dotfiles-managed
+# rc is usually a symlink, and `mv` would orphan the target and drop its mode.
+rc_rewrite() {
+  RC="$1"; shift
+  TMP="${RC}.tmp"
+  if "$@" > "$TMP"; then
+    cp "$RC" "$RC.bak"
+    cat "$TMP" > "$RC"
+    rm -f "$TMP"
+  else
+    rm -f "$TMP"
+    error "Failed to rewrite $RC — left untouched"
+  fi
+}
+
 migrate_legacy_block() {
   RC="$1"; LMS="$2"; LME="$3"; TOOL="$4"
   [ -f "$RC" ] || return 0
   grep -q "$LMS" "$RC" 2>/dev/null || return 0
-  TMP="${RC}.tmp"
-  sed "\|$LMS|,\|$LME|d" "$RC" > "$TMP" && mv "$TMP" "$RC"
+  if ! block_is_terminated "$RC" "$LMS" "$LME"; then
+    warn "Unterminated block ($LMS) in $RC — left untouched. Add the '$LME' line by hand, then re-run."
+    return 0
+  fi
+  rc_rewrite "$RC" delete_marked_block "$RC" "$LMS" "$LME"
   info "Migrated legacy block ($LMS) from $RC"
   rc_block_register "$RC" "$TOOL"
 }
@@ -170,15 +220,14 @@ SHARED_BLOCK
       return
       ;;
   esac
-  TMP="${RC}.tmp"
-  awk -v s="$SHARED_MARKER_START" -v e="$SHARED_MARKER_END" -v tool="$TOOL" '
+  rc_rewrite "$RC" awk -v s="$SHARED_MARKER_START" -v e="$SHARED_MARKER_END" -v tool="$TOOL" '
     $0 ~ s { inblock=1; print; next }
     $0 ~ e { inblock=0; print; next }
     inblock && /^# registered-by:/ {
       sub(/\r?$/, " " tool); print; next
     }
     { print }
-  ' "$RC" > "$TMP" && mv "$TMP" "$RC"
+  ' "$RC"
   info "Registered '$TOOL' in shared block at $RC"
 }
 
@@ -201,17 +250,19 @@ rc_block_unregister() {
   done
 
   if [ -z "$NEW_TOKENS" ]; then
-    TMP="${RC}.tmp"
-    sed "\|$SHARED_MARKER_START|,\|$SHARED_MARKER_END|d" "$RC" > "$TMP" && mv "$TMP" "$RC"
+    if ! block_is_terminated "$RC" "$SHARED_MARKER_START" "$SHARED_MARKER_END"; then
+      warn "Unterminated shared block in $RC — left untouched. Remove it by hand."
+      return 0
+    fi
+    rc_rewrite "$RC" delete_marked_block "$RC" "$SHARED_MARKER_START" "$SHARED_MARKER_END"
     info "Removed shared wrapper block from $RC (no tools remain)"
   else
-    TMP="${RC}.tmp"
-    awk -v s="$SHARED_MARKER_START" -v e="$SHARED_MARKER_END" -v new="$NEW_TOKENS" '
+    rc_rewrite "$RC" awk -v s="$SHARED_MARKER_START" -v e="$SHARED_MARKER_END" -v new="$NEW_TOKENS" '
       $0 ~ s { inblock=1; print; next }
       $0 ~ e { inblock=0; print; next }
       inblock && /^# registered-by:/ { print "# registered-by: " new; next }
       { print }
-    ' "$RC" > "$TMP" && mv "$TMP" "$RC"
+    ' "$RC"
     info "Unregistered '$TOOL' from shared block at $RC (still registered: $NEW_TOKENS)"
   fi
 }
