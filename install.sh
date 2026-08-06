@@ -348,8 +348,29 @@ fish_unregister() {
 
 # --- settings.json hook helpers ---
 
+# Guarantee SETTINGS_FILE holds a JSON object before anything mutates it.
+#
+# Seeding only when the file was ABSENT was not enough: on empty input
+# `jq '. + {…}'` exits 0 with empty output, so the result was moved into place
+# and a 0-byte settings.json reported as a successful install. An exit-code
+# check does not catch that one — jq genuinely succeeded.
+#
+# Only jq's exit 4 (no output produced at all) means the file is empty or
+# whitespace and safe to seed. Exit 5 is a parse error and exit 1 is valid JSON
+# of the wrong type; both are real content, and writing `{}` over either would
+# destroy more than the bug ever did.
 ensure_settings() {
-  [ -f "$SETTINGS_FILE" ] || printf '{}\n' > "$SETTINGS_FILE"
+  if [ ! -f "$SETTINGS_FILE" ]; then
+    printf '{}\n' > "$SETTINGS_FILE"
+    return
+  fi
+  STATUS=0
+  jq -e 'type == "object"' "$SETTINGS_FILE" >/dev/null 2>&1 || STATUS=$?
+  case "$STATUS" in
+    0) ;;
+    4) printf '{}\n' > "$SETTINGS_FILE" ;;
+    *) error "$SETTINGS_FILE is not a JSON object — fix it by hand, then re-run" ;;
+  esac
 }
 
 # Run a jq program over SETTINGS_FILE and install the result, or abort.
