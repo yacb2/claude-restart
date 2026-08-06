@@ -369,9 +369,15 @@ remove_hook() {
   [ -f "$SETTINGS_FILE" ] || return 0
   grep -q "$CMD" "$SETTINGS_FILE" || return 0
   TMP="${SETTINGS_FILE}.tmp"
+  # Filter the INNER hook array, then drop groups that became empty. Selecting
+  # over the outer array instead takes the whole matcher group down as soon as
+  # one hook inside it matches — including hooks the user put there themselves.
   jq --arg cmd "$CMD" --arg ev "$EVENT" '
     if .hooks[$ev] then
-      .hooks[$ev] |= map(select(.hooks | all(.command != $cmd)))
+      .hooks[$ev] |= (
+        map(.hooks |= map(select(.command != $cmd)))
+        | map(select(.hooks | length > 0))
+      )
       | if .hooks[$ev] == [] then del(.hooks[$ev]) else . end
     else . end
   ' "$SETTINGS_FILE" > "$TMP" && mv "$TMP" "$SETTINGS_FILE"
