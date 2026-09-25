@@ -1,5 +1,5 @@
 #!/bin/sh
-# claude-wrapper version: 6
+# claude-wrapper version: 7
 # Unified wrapper for claude-restart and claude-session-handoff.
 #
 # Runs claude normally. After each exit, checks per-PID flag files in
@@ -33,7 +33,7 @@
 #
 # This file is co-owned by:
 #   - https://github.com/yacb2/claude-restart
-#   - https://github.com/user/claude-session-handoff  (rename as published)
+#   - https://github.com/yacb2/claude-session-handoff
 # Both installers write the highest version they ship; the file is byte-for-byte
 # identical across repos.
 
