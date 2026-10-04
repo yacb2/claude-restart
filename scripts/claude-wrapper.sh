@@ -1,5 +1,5 @@
 #!/bin/sh
-# claude-wrapper version: 7
+# claude-wrapper version: 8
 # Unified wrapper for claude-restart and claude-session-handoff.
 #
 # Runs claude normally. After each exit, checks per-PID flag files in
@@ -156,7 +156,10 @@ while [ -f "$HANDOFF_FLAG" ] || [ -f "$RESTART_FLAG" ]; do
       # session starts processing without waiting for the user to type.
       # SessionStart still fires first and injects the handoff as
       # additionalContext; this prompt becomes the model's first user message.
-      run_claude "continue"
+      # A sentence, not a bare "continue", so it does not read as typed by the
+      # owner. Usage readouts match it as the kickoff (mine-handoff-triggers.py,
+      # aidex usage-retro prompt_kinds.py).
+      run_claude "Continúa desde el brief del handoff."
     else
       echo ""
       echo "  ⚠ Handoff sin payload — la sesión nueva arranca limpia, sin contexto sembrado."
