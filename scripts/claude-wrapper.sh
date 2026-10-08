@@ -1,5 +1,5 @@
 #!/bin/sh
-# claude-wrapper version: 8
+# claude-wrapper version: 9
 # Unified wrapper for claude-restart and claude-session-handoff.
 #
 # Runs claude normally. After each exit, checks per-PID flag files in
@@ -128,6 +128,29 @@ run_claude() {
   return $CLAUDE_EXIT
 }
 
+# A handoff successor keeps the launch's model and effort (v9). Only the launch
+# flags are visible here: a /model change inside the session is not.
+INHERIT_MODEL=""
+INHERIT_EFFORT=""
+_prev=""
+for _arg in "$@"; do
+  case "$_prev" in
+    --model) INHERIT_MODEL=$_arg ;;
+    --effort) INHERIT_EFFORT=$_arg ;;
+  esac
+  case "$_arg" in
+    --model=*) INHERIT_MODEL=${_arg#--model=} ;;
+    --effort=*) INHERIT_EFFORT=${_arg#--effort=} ;;
+  esac
+  _prev=$_arg
+done
+
+run_successor() {
+  [ -n "$INHERIT_EFFORT" ] && set -- --effort "$INHERIT_EFFORT" "$@"
+  [ -n "$INHERIT_MODEL" ] && set -- --model "$INHERIT_MODEL" "$@"
+  run_claude "$@"
+}
+
 # First run: pass through original arguments
 run_claude "$@"
 
@@ -159,14 +182,14 @@ while [ -f "$HANDOFF_FLAG" ] || [ -f "$RESTART_FLAG" ]; do
       # A sentence, not a bare "continue", so it does not read as typed by the
       # owner. Usage readouts match it as the kickoff (mine-handoff-triggers.py,
       # aidex usage-retro prompt_kinds.py).
-      run_claude "Continúa desde el brief del handoff."
+      run_successor "Continúa desde el brief del handoff."
     else
       echo ""
       echo "  ⚠ Handoff sin payload — la sesión nueva arranca limpia, sin contexto sembrado."
       echo "    Si querías preservar contexto, pide 'handoff: <texto>' o invoca el skill"
       echo "    de handoff para que Claude genere el prompt antes de cerrar la sesión."
       echo ""
-      run_claude
+      run_successor
     fi
     continue
   fi
