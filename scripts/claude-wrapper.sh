@@ -1,5 +1,5 @@
 #!/bin/sh
-# claude-wrapper version: 9
+# claude-wrapper version: 10
 # Unified wrapper for claude-restart and claude-session-handoff.
 #
 # Runs claude normally. After each exit, checks per-PID flag files in
@@ -37,7 +37,7 @@
 # Both installers write the highest version they ship; the file is byte-for-byte
 # identical across repos.
 
-CLAUDE_TMP_DIR="${HOME}/.claude/tmp"
+CLAUDE_TMP_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/tmp"
 WRAPPER_ID=$$
 RESTART_FLAG="${CLAUDE_TMP_DIR}/restart-flag-${WRAPPER_ID}"
 SESSION_FILE="${CLAUDE_TMP_DIR}/session-id-${WRAPPER_ID}"
@@ -203,7 +203,7 @@ while [ -f "$HANDOFF_FLAG" ] || [ -f "$RESTART_FLAG" ]; do
   fi
 
   if [ -n "$SESSION_ID" ]; then
-    SESSION_JSONL=$(find "$HOME/.claude/projects" -name "${SESSION_ID}.jsonl" 2>/dev/null | head -1)
+    SESSION_JSONL=$(find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" -name "${SESSION_ID}.jsonl" 2>/dev/null | head -1)
     if [ -n "$SESSION_JSONL" ]; then
       FILE_SIZE=$(wc -c < "$SESSION_JSONL" | tr -d ' ')
       SIZE_MB=$((FILE_SIZE / 1048576))

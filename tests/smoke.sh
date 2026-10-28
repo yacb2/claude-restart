@@ -132,6 +132,25 @@ run_restart
 INSTALLED_VERSION=$(awk '/^# claude-wrapper version:/{print $4;exit}' "$CLAUDE_DIR/scripts/claude-wrapper.sh")
 assert "wrapper kept at v99 (not downgraded)" '[ "$INSTALLED_VERSION" = "99" ]'
 
+# --- Case 7: company account keeps hook and wrapper state under CLAUDE_CONFIG_DIR ---
+# CLAUDE_CONFIG_DIR is the account selector (Claude Code's own variable). The
+# capture hook and the wrapper's flag directory must follow it; with it unset
+# they must keep using $HOME/.claude (personal account, unchanged).
+echo "Case 7: CLAUDE_CONFIG_DIR redirects state"
+SB7="$SANDBOX_BASE/case7"
+mkdir -p "$SB7/home" "$SB7/work" "$SB7/bin"
+printf '#!/bin/sh\nexit 0\n' > "$SB7/bin/claude"; chmod +x "$SB7/bin/claude"
+printf '{"session_id":"sess-work"}' | HOME="$SB7/home" CLAUDE_CONFIG_DIR="$SB7/work" CLAUDE_RESTART_ID=4242 \
+  sh "$REPO_RESTART/scripts/capture-session-id.sh"
+assert "capture hook writes under CLAUDE_CONFIG_DIR" '[ "$(cat "$SB7/work/tmp/session-id-4242" 2>/dev/null)" = "sess-work" ]'
+assert "capture hook leaves HOME/.claude alone"      '[ ! -e "$SB7/home/.claude" ]'
+printf '{"session_id":"sess-home"}' | HOME="$SB7/home" CLAUDE_RESTART_ID=4243 \
+  sh "$REPO_RESTART/scripts/capture-session-id.sh"
+assert "capture hook unset -> HOME/.claude/tmp"      '[ "$(cat "$SB7/home/.claude/tmp/session-id-4243" 2>/dev/null)" = "sess-home" ]'
+rm -rf "$SB7/home"; mkdir -p "$SB7/home"
+HOME="$SB7/home" CLAUDE_CONFIG_DIR="$SB7/work" PATH="$SB7/bin:$PATH" sh "$REPO_RESTART/scripts/claude-wrapper.sh" >/dev/null 2>&1 </dev/null || true
+assert "wrapper tmp dir lives under CLAUDE_CONFIG_DIR" '[ -d "$SB7/work/tmp" ] && [ ! -e "$SB7/home/.claude" ]'
+
 echo ""
 echo "Summary: $PASS pass, $FAIL fail"
 [ "$FAIL" -eq 0 ]

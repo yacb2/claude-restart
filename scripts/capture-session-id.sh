@@ -8,7 +8,7 @@
 #
 # Requires: jq
 
-CLAUDE_RESTART_DIR="${HOME}/.claude/tmp"
+CLAUDE_RESTART_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/tmp"
 
 # Only save when running inside the restart wrapper
 if [ -z "$CLAUDE_RESTART_ID" ]; then

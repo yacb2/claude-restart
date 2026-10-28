@@ -78,7 +78,7 @@ fi
 
 # --- Execute restart ---
 
-CLAUDE_RESTART_DIR="${HOME}/.claude/tmp"
+CLAUDE_RESTART_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/tmp"
 RESTART_FLAG="${CLAUDE_RESTART_DIR}/restart-flag-${CLAUDE_RESTART_ID}"
 
 mkdir -p "$CLAUDE_RESTART_DIR"
