@@ -1,5 +1,5 @@
 #!/bin/sh
-# claude-wrapper version: 10
+# claude-wrapper version: 11
 # Unified wrapper for claude-restart and claude-session-handoff.
 #
 # Runs claude normally. After each exit, checks per-PID flag files in
@@ -173,7 +173,7 @@ while [ -f "$HANDOFF_FLAG" ] || [ -f "$RESTART_FLAG" ]; do
     if [ -s "$HANDOFF_PAYLOAD" ]; then
       PAYLOAD_BYTES=$(wc -c < "$HANDOFF_PAYLOAD" | tr -d ' ')
       echo ""
-      echo "  ↻ Handoff — iniciando sesión nueva con ${PAYLOAD_BYTES} bytes de contexto sembrado…"
+      echo "  ↻ Handoff — starting a new session with ${PAYLOAD_BYTES} bytes of seeded context…"
       echo ""
       # A seeded payload gets an initial prompt as a positional arg so the new
       # session starts processing without waiting for the user to type.
@@ -182,12 +182,12 @@ while [ -f "$HANDOFF_FLAG" ] || [ -f "$RESTART_FLAG" ]; do
       # A sentence, not a bare "continue", so it does not read as typed by the
       # owner. Usage readouts match it as the kickoff (mine-handoff-triggers.py,
       # aidex usage-retro prompt_kinds.py).
-      run_successor "Continúa desde el brief del handoff."
+      run_successor "Continue from the handoff brief."
     else
       echo ""
-      echo "  ⚠ Handoff sin payload — la sesión nueva arranca limpia, sin contexto sembrado."
-      echo "    Si querías preservar contexto, pide 'handoff: <texto>' o invoca el skill"
-      echo "    de handoff para que Claude genere el prompt antes de cerrar la sesión."
+      echo "  ⚠ Handoff without payload — the new session starts clean, with no seeded context."
+      echo "    If you wanted to keep context, ask for 'handoff: <text>' or invoke the handoff skill"
+      echo "    so Claude writes the prompt before closing the session."
       echo ""
       run_successor
     fi
