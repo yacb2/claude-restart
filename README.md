@@ -202,7 +202,8 @@ The wrapper loop checks both flag patterns (`restart-flag-<pid>` and `handoff-fl
 | `scripts/restart-hook.sh` | UserPromptSubmit hook that intercepts `restart` prompts and executes the restart directly (zero tokens) |
 | `commands/restart.md` | Claude Code slash command fallback that writes the restart flag and sends SIGTERM through the model |
 | `install.sh` | Installer with shell detection, shared-wrapper protocol coordination, hook registration, and `--uninstall` support |
-| `tests/smoke.sh` | Installer-protocol validation (22 asserts, 6 cases). Requires `claude-session-handoff` as a sibling repo or its path set via `REPO_HANDOFF`. |
+| `tests/smoke.sh` | Installer-protocol validation (26 asserts, 7 cases). Requires `claude-session-handoff` as a sibling repo or its path set via `REPO_HANDOFF`. |
+| `tests/wrapper-dispatch.sh` | Runtime check of the wrapper's resume branch with a stub `claude`: a signal-killed resume ends the loop, a failed one (exit 1..127) falls back to a fresh session. |
 
 ## License
 

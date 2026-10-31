@@ -1,5 +1,5 @@
 #!/bin/sh
-# claude-wrapper version: 11
+# claude-wrapper version: 12
 # Unified wrapper for claude-restart and claude-session-handoff.
 #
 # Runs claude normally. After each exit, checks per-PID flag files in
@@ -28,6 +28,10 @@
 #
 # v6 pays the two debts that backgrounding claude had quietly incurred:
 # its stdin and its exit status. See `exec 3<&0` and LAST_CLAUDE_EXIT below.
+#
+# v12: a resume that dies by a signal (exit >= 128: SIGTERM, SIGHUP, SIGKILL)
+# was closed by the user or the system; only a real failure (1..127) falls back
+# to a fresh session. See RESUME_EXIT below and tests/wrapper-dispatch.sh.
 #
 # POSIX-compatible (sh, bash, zsh, dash).
 #
@@ -219,7 +223,7 @@ while [ -f "$HANDOFF_FLAG" ] || [ -f "$RESTART_FLAG" ]; do
     echo ""
     run_claude --resume "$SESSION_ID"
     RESUME_EXIT=$?
-    if [ $RESUME_EXIT -ne 0 ] && [ ! -f "$RESTART_FLAG" ] && [ ! -f "$HANDOFF_FLAG" ]; then
+    if [ $RESUME_EXIT -ne 0 ] && [ $RESUME_EXIT -lt 128 ] && [ ! -f "$RESTART_FLAG" ] && [ ! -f "$HANDOFF_FLAG" ]; then
       echo ""
       echo "  ⚠ Resume failed — starting fresh session…"
       echo ""
