@@ -1,5 +1,5 @@
 #!/bin/sh
-# claude-wrapper version: 12
+# claude-wrapper version: 13
 # Unified wrapper for claude-restart and claude-session-handoff.
 #
 # Runs claude normally. After each exit, checks per-PID flag files in
@@ -29,6 +29,12 @@
 # v6 pays the two debts that backgrounding claude had quietly incurred:
 # its stdin and its exit status. See `exec 3<&0` and LAST_CLAUDE_EXIT below.
 #
+# v13: a handoff successor launches with --name <address> when the hooks left
+# a valid handoff-name-<pid> file, and a restart passes the remembered address
+# again (a bare --resume adopts the display title as the address). See
+# run_successor below and tests/wrapper-dispatch.sh. Needs a Claude Code with
+# --name and --session-id (2.1.316 has both); there is no runtime gate.
+#
 # v12: a resume that dies by a signal (exit >= 128: SIGTERM, SIGHUP, SIGKILL)
 # was closed by the user or the system; only a real failure (1..127) falls back
 # to a fresh session. See RESUME_EXIT below and tests/wrapper-dispatch.sh.
@@ -48,6 +54,7 @@ SESSION_FILE="${CLAUDE_TMP_DIR}/session-id-${WRAPPER_ID}"
 HANDOFF_FLAG="${CLAUDE_TMP_DIR}/handoff-flag-${WRAPPER_ID}"
 HANDOFF_PAYLOAD="${CLAUDE_TMP_DIR}/handoff-payload-${WRAPPER_ID}"
 HANDOFF_EXIT="${CLAUDE_TMP_DIR}/handoff-exit-${WRAPPER_ID}"
+HANDOFF_NAME="${CLAUDE_TMP_DIR}/handoff-name-${WRAPPER_ID}"
 
 export CLAUDE_RESTART_ID="$WRAPPER_ID"
 export CLAUDE_HANDOFF_ID="$WRAPPER_ID"
@@ -94,12 +101,12 @@ if ! find_claude_binary; then
 fi
 
 cleanup() {
-  rm -f "$RESTART_FLAG" "$SESSION_FILE" "$HANDOFF_FLAG" "$HANDOFF_PAYLOAD" "$HANDOFF_EXIT"
+  rm -f "$RESTART_FLAG" "$SESSION_FILE" "$HANDOFF_FLAG" "$HANDOFF_PAYLOAD" "$HANDOFF_EXIT" "$HANDOFF_NAME"
 }
 trap cleanup EXIT
 
 # Clear any stale state from a prior process that happened to reuse this PID
-rm -f "$RESTART_FLAG" "$SESSION_FILE" "$HANDOFF_FLAG" "$HANDOFF_PAYLOAD" "$HANDOFF_EXIT"
+rm -f "$RESTART_FLAG" "$SESSION_FILE" "$HANDOFF_FLAG" "$HANDOFF_PAYLOAD" "$HANDOFF_EXIT" "$HANDOFF_NAME"
 
 # run_claude — launch claude with a background watcher that signals SIGTERM
 # when the per-PID handoff-exit sentinel appears. This keeps `kill` out of
@@ -149,7 +156,44 @@ for _arg in "$@"; do
   _prev=$_arg
 done
 
+# The address of the session this wrapper is running, when a handoff named it.
+# Empty for a root session, which keeps its automatic name.
+SESSION_NAME=""
+# The session id that address was given to; a restart only re-passes the
+# address while the session it resumes is that one (/resume or /clear moves on).
+SESSION_NAME_ID=""
+
 run_successor() {
+  # The hooks write the typeable address; take it once and delete it. Anything
+  # but 1..48 chars of [a-z0-9-] is ignored, and the new session is then not
+  # that address, so the old one is forgotten.
+  SESSION_NAME=""
+  SESSION_NAME_ID=""
+  if [ -f "$HANDOFF_NAME" ]; then
+    # Whole file: a second line puts a newline in the name, which the class
+    # below refuses (the contract is one line).
+    SESSION_NAME=$(cat "$HANDOFF_NAME")
+    rm -f "$HANDOFF_NAME"
+    case "$SESSION_NAME" in
+      # Spelled out: a range like a-z matches capitals in some locales.
+      ""|-*|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) SESSION_NAME="" ;;
+    esac
+    [ "${#SESSION_NAME}" -gt 48 ] && SESSION_NAME=""
+  fi
+  if [ -n "$SESSION_NAME" ]; then
+    # The id is chosen here so the restart can tell this session from a later
+    # one. Without a way to make one, the address is not passed at all.
+    if command -v uuidgen >/dev/null 2>&1; then
+      SESSION_NAME_ID=$(uuidgen | tr 'A-Z' 'a-z')
+    elif [ -r /proc/sys/kernel/random/uuid ]; then
+      SESSION_NAME_ID=$(cat /proc/sys/kernel/random/uuid)
+    fi
+    if [ -n "$SESSION_NAME_ID" ]; then
+      set -- --session-id "$SESSION_NAME_ID" --name "$SESSION_NAME" "$@"
+    else
+      SESSION_NAME=""
+    fi
+  fi
   [ -n "$INHERIT_EFFORT" ] && set -- --effort "$INHERIT_EFFORT" "$@"
   [ -n "$INHERIT_MODEL" ] && set -- --model "$INHERIT_MODEL" "$@"
   run_claude "$@"
@@ -177,7 +221,7 @@ while [ -f "$HANDOFF_FLAG" ] || [ -f "$RESTART_FLAG" ]; do
     if [ -s "$HANDOFF_PAYLOAD" ]; then
       PAYLOAD_BYTES=$(wc -c < "$HANDOFF_PAYLOAD" | tr -d ' ')
       echo ""
-      echo "  ↻ Handoff — starting a new session with ${PAYLOAD_BYTES} bytes of seeded context…"
+      echo "  Handoff — starting a new session with ${PAYLOAD_BYTES} bytes of seeded context…"
       echo ""
       # A seeded payload gets an initial prompt as a positional arg so the new
       # session starts processing without waiting for the user to type.
@@ -219,20 +263,28 @@ while [ -f "$HANDOFF_FLAG" ] || [ -f "$RESTART_FLAG" ]; do
       fi
     fi
     echo ""
-    echo "  ↻ Restarting Claude Code — resuming session ${SESSION_ID%%-*}…"
+    echo "  Restarting Claude Code — resuming session ${SESSION_ID%%-*}…"
     echo ""
-    run_claude --resume "$SESSION_ID"
+    if [ -n "$SESSION_NAME" ] && [ "$SESSION_ID" = "$SESSION_NAME_ID" ]; then
+      run_claude --resume "$SESSION_ID" --name "$SESSION_NAME"
+    else
+      run_claude --resume "$SESSION_ID"
+    fi
     RESUME_EXIT=$?
     if [ $RESUME_EXIT -ne 0 ] && [ $RESUME_EXIT -lt 128 ] && [ ! -f "$RESTART_FLAG" ] && [ ! -f "$HANDOFF_FLAG" ]; then
       echo ""
       echo "  ⚠ Resume failed — starting fresh session…"
       echo ""
+      SESSION_NAME=""
+      SESSION_NAME_ID=""
       run_claude "$@"
     fi
   else
     echo ""
-    echo "  ↻ Restarting Claude Code — no session ID found, starting fresh…"
+    echo "  Restarting Claude Code — no session ID found, starting fresh…"
     echo ""
+    SESSION_NAME=""
+    SESSION_NAME_ID=""
     run_claude "$@"
   fi
 done
