@@ -8,7 +8,11 @@ Useful when you need to:
 - Re-inject context after hitting token limits
 - Recover from MCP connection issues
 
-> **Related**: [anthropics/claude-code#34320](https://github.com/anthropics/claude-code/issues/34320) — feature request for native `/restart`
+> **Native `/restart` is here.** Claude Code ships a built-in `/restart` command (alias `/update`) since **v2.1.288 (2026-10-02)**. It restarts Claude Code in place and keeps the current session, so it covers the most common reason to use this tool: picking up a new version without closing the conversation. If it is available to you, prefer it.
+>
+> The built-in command is not available everywhere. It requires a Pro, Max or Ultra plan and a native install on macOS or Linux, and it is rolled out gradually behind a feature flag. It does **not** run on Windows or WSL. claude-restart stays maintained for those setups, and for restarts the model triggers by itself. **This repository will be archived once the native command reaches Windows/WSL.**
+>
+> Background: [anthropics/claude-code#34320](https://github.com/anthropics/claude-code/issues/34320), the original feature request for native `/restart`.
 
 ## How it works
 
