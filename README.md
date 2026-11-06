@@ -8,7 +8,7 @@ Useful when you need to:
 - Re-inject context after hitting token limits
 - Recover from MCP connection issues
 
-> **Native `/restart` is here.** Claude Code ships a built-in `/restart` command (alias `/update`) since **v2.1.288 (2026-10-02)**. It restarts Claude Code in place and keeps the current session, so it covers the most common reason to use this tool: picking up a new version without closing the conversation. If it is available to you, prefer it.
+> **Native `/restart` is here.** Claude Code ships a built-in `/restart` command (alias `/update`) since **v2.1.288 (2026-10-02)**. It restarts Claude Code in place and keeps the current session, so it covers the most common reason to use this tool: picking up a new version without closing the conversation. See its requirements below; this README does not compare the two.
 >
 > The built-in command is not available everywhere. It requires a Pro, Max or Ultra plan and a native install on macOS or Linux, and it is rolled out gradually behind a feature flag. It does **not** run on Windows or WSL. claude-restart stays maintained for those setups, and for restarts the model triggers by itself. **This repository will be archived once the native command reaches Windows/WSL.**
 >
