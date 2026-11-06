@@ -88,5 +88,68 @@ else
   no "restart during a resume: invocation 3 should be '--resume sess-1', got '$IN3'"
 fi
 
+# A handoff successor launches under the name its hooks left in handoff-name-<pid>
+# (wrapper v14: the readable title, or the kebab address of an older hook), and a
+# restart re-passes it only while no human /rename wrote a different custom-title
+# record (probe P10). claude-restart's own hooks never write that file; the rows
+# keep this copy of the wrapper honest, and the full table is in
+# claude-session-handoff's tests/wrapper-dispatch.sh.
+#    Row: "<name file content, ~ = space> <title the transcript ends with, or ->
+#          <expected --name element on invocation 2> <expected invocation 3>".
+#    Stub: invocation 1 stages a handoff (payload + name file); invocation 2
+#    records its argv one element per line, writes the transcript row 2 asks for,
+#    and stages a restart of the session id the wrapper gave it; invocation 3 only
+#    records. "<none>" means no --name.
+for ROW in "ACME-2216~ref~and~promo~on~signup~(8) - ACME-2216~ref~and~promo~on~signup~(8) with" \
+           "acme-acme-9001-login-2 - acme-acme-9001-login-2 with" \
+           "ACME-2216~ref~(8) ACME-2216~ref~(8) ACME-2216~ref~(8) with" \
+           "ACME-2216~ref~(8) Renamed~by~human ACME-2216~ref~(8) without" \
+           "-bad - <none> without"; do
+  set -- $ROW
+  NAME=$(printf '%s' "$1" | tr '~' ' '); TITLE=$(printf '%s' "$2" | tr '~' ' ')
+  WANT2=$(printf '%s' "$3" | tr '~' ' '); WANT3=$4
+  scenario "name_$1_$2"
+  cat > "$SBIN/claude" <<'STUB'
+#!/bin/sh
+TMP="$HOME/.claude/tmp"
+printf '%s\n' "$#" >> "$TMP/argc.log"
+prev=""; NAMEARG="<none>"
+for a in "$@"; do
+  [ "$prev" = "--session-id" ] && SID=$a
+  [ "$prev" = "--name" ] && NAMEARG=$a
+  prev=$a
+done
+printf '%s\n' "$NAMEARG" >> "$TMP/namearg.log"
+N=$(( $(wc -l < "$TMP/namearg.log") ))
+case "$N" in
+  1) printf 'seeded' > "$TMP/handoff-payload-$CLAUDE_HANDOFF_ID"
+     printf '%s\n' "$NAME_FILE" > "$TMP/handoff-name-$CLAUDE_HANDOFF_ID"
+     touch "$TMP/handoff-flag-$CLAUDE_HANDOFF_ID" ;;
+  2) rm -f "$TMP/handoff-payload-$CLAUDE_HANDOFF_ID"
+     [ -n "$SID" ] || SID=none
+     if [ "$TITLE" != "-" ]; then
+       mkdir -p "$HOME/.claude/projects/p"
+       jq -nc --arg t "$TITLE" '{type:"custom-title",customTitle:$t,sessionId:"s"}' > "$HOME/.claude/projects/p/$SID.jsonl"
+     fi
+     printf '%s' "$SID" > "$TMP/session-id-$CLAUDE_RESTART_ID"
+     touch "$TMP/restart-flag-$CLAUDE_RESTART_ID" ;;
+esac
+exit 0
+STUB
+  chmod +x "$SBIN/claude"
+  NAME_FILE=$NAME TITLE=$TITLE HOME="$SHOME" PATH="$SBIN:$PATH" sh "$WRAPPER" >/dev/null 2>&1
+  GOT2=$(sed -n 2p "$SHOME/.claude/tmp/namearg.log")
+  GOT3=$(sed -n 3p "$SHOME/.claude/tmp/namearg.log")
+  ARGC2=$(sed -n 2p "$SHOME/.claude/tmp/argc.log")
+  # a name is one element after --name: --session-id UUID --name NAME (+ kickoff)
+  WANTC2=5; [ "$WANT2" = "<none>" ] && WANTC2=1
+  WANTARG3="<none>"; [ "$WANT3" = with ] && WANTARG3=$WANT2
+  if [ "$GOT2" = "$WANT2" ] && [ "$ARGC2" = "$WANTC2" ] && [ "$GOT3" = "$WANTARG3" ]; then
+    ok "name file '$NAME', transcript title '$TITLE' -> launch '$GOT2' (argc $ARGC2), restart '$GOT3'"
+  else
+    no "name file '$NAME', transcript title '$TITLE': want launch '$WANT2' (argc $WANTC2) and restart '$WANTARG3', got '$GOT2' (argc $ARGC2) and '$GOT3'"
+  fi
+done
+
 summary
 [ "$FAIL" = 0 ]

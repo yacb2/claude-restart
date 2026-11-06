@@ -1,5 +1,5 @@
 #!/bin/sh
-# claude-wrapper version: 13
+# claude-wrapper version: 14
 # Unified wrapper for claude-restart and claude-session-handoff.
 #
 # Runs claude normally. After each exit, checks per-PID flag files in
@@ -28,6 +28,16 @@
 #
 # v6 pays the two debts that backgrounding claude had quietly incurred:
 # its stdin and its exit status. See `exec 3<&0` and LAST_CLAUDE_EXIT below.
+#
+# v14: the name file may hold the readable title (`ACME-2216 ref and promo on
+# signup (8)`), not only the kebab address, so a successor has its display name
+# from launch (naming audit D13, BL-087). A valid file is one line of 1..200
+# BYTES with no control byte and no leading `-`; the old address is a subset, so
+# an old hook still works. A restart re-passes --name only while the transcript
+# has no `custom-title` record or the last one is the launch name: /rename writes
+# the same record as --name and `--resume --name X` would undo it (probe P10,
+# .context/research/2026-11-04-naming-audit/probes.md). Needs jq to compare; with
+# no jq a transcript that holds a title record is assumed renamed.
 #
 # v13: a handoff successor launches with --name <address> when the hooks left
 # a valid handoff-name-<pid> file, and a restart passes the remembered address
@@ -156,33 +166,44 @@ for _arg in "$@"; do
   _prev=$_arg
 done
 
-# The address of the session this wrapper is running, when a handoff named it.
+# The name of the session this wrapper is running, when a handoff named it.
 # Empty for a root session, which keeps its automatic name.
 SESSION_NAME=""
-# The session id that address was given to; a restart only re-passes the
-# address while the session it resumes is that one (/resume or /clear moves on).
+# The session id that name was given to; a restart only re-passes the name
+# while the session it resumes is that one (/resume or /clear moves on) and no
+# human has renamed it since (see the restart branch).
 SESSION_NAME_ID=""
 
 run_successor() {
-  # The hooks write the typeable address; take it once and delete it. Anything
-  # but 1..48 chars of [a-z0-9-] is ignored, and the new session is then not
-  # that address, so the old one is forgotten.
+  # The hooks write the display name (v14; the typeable address before). Valid:
+  # one line, 1..200 bytes, no byte in 0x00-0x1f or 0x7f, first char not "-".
+  # Anything else is ignored, and the new session is then not that name, so the
+  # old one is forgotten. Bytes, not characters: ${#} counts characters in a
+  # UTF-8 bash and bytes in dash, so wc -c under LC_ALL=C does the counting.
   SESSION_NAME=""
   SESSION_NAME_ID=""
   if [ -f "$HANDOFF_NAME" ]; then
-    # Whole file: a second line puts a newline in the name, which the class
-    # below refuses (the contract is one line).
+    # A NUL would be dropped silently by $(...), so look for it in the file.
+    _raw=$(wc -c < "$HANDOFF_NAME" | tr -d ' ')
+    _nonul=$(LC_ALL=C tr -d '\000' < "$HANDOFF_NAME" | wc -c | tr -d ' ')
+    # Whole file: a second line puts a newline in the name, refused below
+    # (the contract is one line). Trailing newlines are all dropped here, so
+    # "name" followed by blank lines is accepted as "name" (harmless).
     SESSION_NAME=$(cat "$HANDOFF_NAME")
     rm -f "$HANDOFF_NAME"
+    _len=$(printf '%s' "$SESSION_NAME" | LC_ALL=C wc -c | tr -d ' ')
+    _clean=$(printf '%s' "$SESSION_NAME" | LC_ALL=C tr -d '\001-\037\177' | wc -c | tr -d ' ')
+    # (an empty name needs no test of its own: the -n guard below skips it)
+    if [ "$_raw" != "$_nonul" ] || [ "$_len" -gt 200 ] || [ "$_len" != "$_clean" ]; then
+      SESSION_NAME=""
+    fi
     case "$SESSION_NAME" in
-      # Spelled out: a range like a-z matches capitals in some locales.
-      ""|-*|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) SESSION_NAME="" ;;
+      -*) SESSION_NAME="" ;;
     esac
-    [ "${#SESSION_NAME}" -gt 48 ] && SESSION_NAME=""
   fi
   if [ -n "$SESSION_NAME" ]; then
     # The id is chosen here so the restart can tell this session from a later
-    # one. Without a way to make one, the address is not passed at all.
+    # one. Without a way to make one, the name is not passed at all.
     if command -v uuidgen >/dev/null 2>&1; then
       SESSION_NAME_ID=$(uuidgen | tr 'A-Z' 'a-z')
     elif [ -r /proc/sys/kernel/random/uuid ]; then
@@ -265,7 +286,29 @@ while [ -f "$HANDOFF_FLAG" ] || [ -f "$RESTART_FLAG" ]; do
     echo ""
     echo "  Restarting Claude Code — resuming session ${SESSION_ID%%-*}…"
     echo ""
+    # Re-pass the launch name only if no human renamed the session since launch
+    # (P10): the last custom-title record is the current title, since the pair
+    # is re-appended on every flush. None, or one equal to the launch name
+    # (compared after JSON decoding, whatever the key order), means no rename.
+    # An empty or missing customTitle decodes to "" or "null": empty re-passes,
+    # "null" omits. No jq means the title cannot be decoded: a transcript with a
+    # title record is then assumed renamed, one without still re-passes.
+    KEEP_NAME=0
     if [ -n "$SESSION_NAME" ] && [ "$SESSION_ID" = "$SESSION_NAME_ID" ]; then
+      if [ -z "$SESSION_JSONL" ]; then
+        KEEP_NAME=1
+      elif command -v jq >/dev/null 2>&1; then
+        # Compared inside jq: a line that is not JSON is skipped, not fatal, and a
+        # title holding a newline is compared whole.
+        KEEP_NAME=$(grep -a '"type":"custom-title"' "$SESSION_JSONL" | jq -nrR --arg n "$SESSION_NAME" \
+          '[inputs | fromjson? | objects | select(.type == "custom-title") | .customTitle]
+           | if length == 0 or last == $n or last == "" then 1 else 0 end' 2>/dev/null)
+        [ "$KEEP_NAME" = 1 ] || KEEP_NAME=0
+      elif ! grep -aq '"type":"custom-title"' "$SESSION_JSONL"; then
+        KEEP_NAME=1
+      fi
+    fi
+    if [ "$KEEP_NAME" = 1 ]; then
       run_claude --resume "$SESSION_ID" --name "$SESSION_NAME"
     else
       run_claude --resume "$SESSION_ID"
