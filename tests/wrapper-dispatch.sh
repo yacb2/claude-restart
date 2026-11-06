@@ -100,7 +100,7 @@ fi
 #    records its argv one element per line, writes the transcript row 2 asks for,
 #    and stages a restart of the session id the wrapper gave it; invocation 3 only
 #    records. "<none>" means no --name.
-for ROW in "ACME-2216~ref~and~promo~on~signup~(8) - ACME-2216~ref~and~promo~on~signup~(8) with" \
+for ROW in "ACME-2216~fix~login~flow~(8) - ACME-2216~fix~login~flow~(8) with" \
            "acme-acme-9001-login-2 - acme-acme-9001-login-2 with" \
            "ACME-2216~ref~(8) ACME-2216~ref~(8) ACME-2216~ref~(8) with" \
            "ACME-2216~ref~(8) Renamed~by~human ACME-2216~ref~(8) without" \

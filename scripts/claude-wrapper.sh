@@ -1,5 +1,5 @@
 #!/bin/sh
-# claude-wrapper version: 14
+# claude-wrapper version: 15
 # Unified wrapper for claude-restart and claude-session-handoff.
 #
 # Runs claude normally. After each exit, checks per-PID flag files in
@@ -29,8 +29,8 @@
 # v6 pays the two debts that backgrounding claude had quietly incurred:
 # its stdin and its exit status. See `exec 3<&0` and LAST_CLAUDE_EXIT below.
 #
-# v14: the name file may hold the readable title (`ACME-2216 ref and promo on
-# signup (8)`), not only the kebab address, so a successor has its display name
+# v14: the name file may hold the readable title (`ACME-2216 fix login
+# flow (8)`), not only the kebab address, so a successor has its display name
 # from launch (naming audit D13, BL-087). A valid file is one line of 1..200
 # BYTES with no control byte and no leading `-`; the old address is a subset, so
 # an old hook still works. A restart re-passes --name only while the transcript
